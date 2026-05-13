@@ -73,7 +73,7 @@ export default function Home() {
   ];
 
   const [projects, setProjects] = useState<Project[]>([
-    { id: 1, name: "تیم تست ", key: "Test/IT", createdAt: 1 },
+    { id: 1, name: "RahBoard Main", key: "RB", createdAt: 1 },
   ]);
 
   const [activeProjectId, setActiveProjectId] = useState(1);
@@ -175,7 +175,6 @@ export default function Home() {
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const firebaseTasks = snapshot.docs.map((docItem) => docItem.data() as Task);
-
       setTasks(firebaseTasks);
     });
 
@@ -200,15 +199,20 @@ export default function Home() {
       createdAt: Date.now(),
     };
 
-    await setDoc(doc(db, "projects", String(newProject.id)), newProject);
-
-    setActiveProjectId(newProject.id);
+    setIsProjectModalOpen(false);
     setProjectName("");
     setProjectKey("");
-    setIsProjectModalOpen(false);
 
-    addLog(`پروژه ${newProject.name} ساخته شد`);
-    notify("پروژه جدید ساخته شد");
+    try {
+      await setDoc(doc(db, "projects", String(newProject.id)), newProject);
+
+      setActiveProjectId(newProject.id);
+      addLog(`پروژه ${newProject.name} ساخته شد`);
+      notify("پروژه جدید ساخته شد");
+    } catch (error) {
+      console.error("Project save error:", error);
+      alert("ذخیره پروژه با خطا مواجه شد.");
+    }
   };
 
   const deleteProject = async (projectId: number) => {
@@ -268,51 +272,63 @@ export default function Home() {
       .map((label) => label.trim())
       .filter(Boolean);
 
-    if (selectedTask) {
-      const currentTask = tasks.find((task) => task.id === selectedTask.id);
-
-      if (!currentTask) return;
-
-      const updatedTask: Task = {
-        ...currentTask,
-        title: taskTitle,
-        description: taskDescription,
-        labels,
-        assigneeId: taskAssigneeId,
-        deadline: taskDeadline,
-        priority: taskPriority,
-      };
-
-      await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
-
-      addLog(`تسک ${updatedTask.code} ویرایش شد`);
-      notify(`تسک ${updatedTask.code} آپدیت شد`);
-    } else {
-      const nextId = Date.now();
-      const projectKey = activeProject?.key || "RB";
-
-      const newTask: Task = {
-        id: nextId,
-        projectId: activeProjectId,
-        code: `${projectKey}-${nextId}`,
-        title: taskTitle,
-        description: taskDescription,
-        status: columns[0]?.key || "todo",
-        comments: [],
-        attachments: [],
-        labels,
-        assigneeId: taskAssigneeId,
-        deadline: taskDeadline,
-        priority: taskPriority,
-      };
-
-      await setDoc(doc(db, "tasks", String(newTask.id)), newTask);
-
-      addLog(`تسک ${newTask.code} ساخته شد`);
-      notify("تسک جدید ساخته شد");
-    }
+    const title = taskTitle;
+    const description = taskDescription;
+    const assigneeId = taskAssigneeId;
+    const deadline = taskDeadline;
+    const priority = taskPriority;
+    const currentSelectedTask = selectedTask;
 
     setIsTaskModalOpen(false);
+
+    try {
+      if (currentSelectedTask) {
+        const currentTask = tasks.find((task) => task.id === currentSelectedTask.id);
+
+        if (!currentTask) return;
+
+        const updatedTask: Task = {
+          ...currentTask,
+          title,
+          description,
+          labels,
+          assigneeId,
+          deadline,
+          priority,
+        };
+
+        await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
+
+        addLog(`تسک ${updatedTask.code} ویرایش شد`);
+        notify(`تسک ${updatedTask.code} آپدیت شد`);
+      } else {
+        const nextId = Date.now();
+        const projectKey = activeProject?.key || "RB";
+
+        const newTask: Task = {
+          id: nextId,
+          projectId: activeProjectId,
+          code: `${projectKey}-${nextId}`,
+          title,
+          description,
+          status: columns[0]?.key || "todo",
+          comments: [],
+          attachments: [],
+          labels,
+          assigneeId,
+          deadline,
+          priority,
+        };
+
+        await setDoc(doc(db, "tasks", String(newTask.id)), newTask);
+
+        addLog(`تسک ${newTask.code} ساخته شد`);
+        notify("تسک جدید ساخته شد");
+      }
+    } catch (error) {
+      console.error("Task save error:", error);
+      alert("ذخیره تسک با خطا مواجه شد.");
+    }
   };
 
   const deleteTask = async (id: number) => {
@@ -401,27 +417,37 @@ export default function Home() {
   const saveColumn = async () => {
     if (!columnTitle.trim()) return;
 
-    if (editingColumnKey) {
-      const order = columns.findIndex((column) => column.key === editingColumnKey);
-
-      await setDoc(doc(db, "columns", editingColumnKey), {
-        label: columnTitle,
-        order,
-      });
-
-      addLog("نام ستون تغییر کرد");
-    } else {
-      const key = columnTitle.toLowerCase().replace(/\s+/g, "-") + "-" + Date.now();
-
-      await setDoc(doc(db, "columns", key), {
-        label: columnTitle,
-        order: columns.length,
-      });
-
-      addLog(`ستون ${columnTitle} اضافه شد`);
-    }
+    const title = columnTitle;
+    const editingKey = editingColumnKey;
 
     setIsColumnModalOpen(false);
+    setColumnTitle("");
+    setEditingColumnKey(null);
+
+    try {
+      if (editingKey) {
+        const order = columns.findIndex((column) => column.key === editingKey);
+
+        await setDoc(doc(db, "columns", editingKey), {
+          label: title,
+          order,
+        });
+
+        addLog("نام ستون تغییر کرد");
+      } else {
+        const key = title.toLowerCase().replace(/\s+/g, "-") + "-" + Date.now();
+
+        await setDoc(doc(db, "columns", key), {
+          label: title,
+          order: columns.length,
+        });
+
+        addLog(`ستون ${title} اضافه شد`);
+      }
+    } catch (error) {
+      console.error("Column save error:", error);
+      alert("ذخیره ستون با خطا مواجه شد.");
+    }
   };
 
   const deleteColumn = async (key: string) => {
@@ -649,7 +675,7 @@ export default function Home() {
                 </div>
 
                 <h1 className="text-3xl font-black tracking-tight">RahBoard</h1>
-                <p className="mt-1 text-sm text-slate-500">مدیریت پروژه و تسک‌های تیم افکس</p>
+                <p className="mt-1 text-sm text-slate-500">مدیریت پروژه و تسک‌های تیم EFEX</p>
               </div>
 
               <div className="flex flex-wrap items-center gap-3">
@@ -763,7 +789,7 @@ export default function Home() {
                   >
                     <div>
                       <h2 className="text-sm font-black">{column.label}</h2>
-                      <p className="mt-1 text-[11px] text-slate-400"></p>
+                      <p className="mt-1 text-[11px] text-slate-400">Drag column</p>
                     </div>
 
                     <div className="flex items-center gap-2">
