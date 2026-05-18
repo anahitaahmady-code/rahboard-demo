@@ -56,12 +56,64 @@ type Task = {
   assigneeId: number | null;
   deadline: string;
   priority: Priority;
+  createdBy?: number;
 };
 
 type Column = {
   key: string;
   label: string;
   order?: number;
+};
+
+type PermissionKey =
+  | "canCreateProject"
+  | "canDeleteProject"
+  | "canCreateColumn"
+  | "canEditColumn"
+  | "canDeleteColumn"
+  | "canCreateTask"
+  | "canEditAnyTask"
+  | "canDeleteAnyTask"
+  | "canManageTeam"
+  | "canDragColumns";
+
+const rolePermissions: Record<UserRole, Record<PermissionKey, boolean>> = {
+  admin: {
+    canCreateProject: true,
+    canDeleteProject: true,
+    canCreateColumn: true,
+    canEditColumn: true,
+    canDeleteColumn: true,
+    canCreateTask: true,
+    canEditAnyTask: true,
+    canDeleteAnyTask: true,
+    canManageTeam: true,
+    canDragColumns: true,
+  },
+  manager: {
+    canCreateProject: true,
+    canDeleteProject: false,
+    canCreateColumn: true,
+    canEditColumn: true,
+    canDeleteColumn: false,
+    canCreateTask: true,
+    canEditAnyTask: true,
+    canDeleteAnyTask: true,
+    canManageTeam: false,
+    canDragColumns: true,
+  },
+  developer: {
+    canCreateProject: false,
+    canDeleteProject: false,
+    canCreateColumn: false,
+    canEditColumn: false,
+    canDeleteColumn: false,
+    canCreateTask: true,
+    canEditAnyTask: false,
+    canDeleteAnyTask: false,
+    canManageTeam: false,
+    canDragColumns: false,
+  },
 };
 
 export default function Home() {
@@ -71,6 +123,11 @@ export default function Home() {
     { id: 3, name: "Sara", role: "developer", avatar: "S" },
     { id: 4, name: "Reza", role: "developer", avatar: "R" },
   ];
+
+  const [currentUserId, setCurrentUserId] = useState<number>(1);
+
+  const currentUser = users.find((user) => user.id === currentUserId) || users[0];
+  const permissions = rolePermissions[currentUser.role];
 
   const [projects, setProjects] = useState<Project[]>([
     { id: 1, name: "RahBoard Main", key: "RB", createdAt: 1 },
@@ -118,6 +175,26 @@ export default function Home() {
   const [notifications, setNotifications] = useState<string[]>([]);
 
   const activeProject = projects.find((project) => project.id === activeProjectId);
+
+  const addLog = (text: string) => {
+    setActivityLogs((prev) => [`${new Date().toLocaleTimeString()} - ${text}`, ...prev]);
+  };
+
+  const notify = (text: string) => {
+    setNotifications((prev) => [text, ...prev.slice(0, 4)]);
+  };
+
+  const showNoAccess = () => {
+    notify("شما دسترسی انجام این عملیات را ندارید");
+  };
+
+  const canEditTask = (task: Task) => {
+    return permissions.canEditAnyTask || task.createdBy === currentUser.id;
+  };
+
+  const canDeleteTask = (task: Task) => {
+    return permissions.canDeleteAnyTask || task.createdBy === currentUser.id;
+  };
 
   useEffect(() => {
     const q = query(collection(db, "projects"), orderBy("createdAt", "asc"));
@@ -181,15 +258,12 @@ export default function Home() {
     return () => unsubscribe();
   }, []);
 
-  const addLog = (text: string) => {
-    setActivityLogs((prev) => [`${new Date().toLocaleTimeString()} - ${text}`, ...prev]);
-  };
-
-  const notify = (text: string) => {
-    setNotifications((prev) => [text, ...prev.slice(0, 4)]);
-  };
-
   const addProject = async () => {
+    if (!permissions.canCreateProject) {
+      showNoAccess();
+      return;
+    }
+
     if (!projectName.trim() || !projectKey.trim()) return;
 
     const newProject: Project = {
@@ -216,6 +290,11 @@ export default function Home() {
   };
 
   const deleteProject = async (projectId: number) => {
+    if (!permissions.canDeleteProject) {
+      showNoAccess();
+      return;
+    }
+
     if (projects.length === 1) {
       alert("حداقل یک پروژه باید باقی بماند.");
       return;
@@ -241,6 +320,11 @@ export default function Home() {
   };
 
   const openNewTaskModal = () => {
+    if (!permissions.canCreateTask) {
+      showNoAccess();
+      return;
+    }
+
     setSelectedTask(null);
     setTaskTitle("");
     setTaskDescription("");
@@ -265,6 +349,16 @@ export default function Home() {
   };
 
   const saveTask = async () => {
+    if (selectedTask && !canEditTask(selectedTask)) {
+      showNoAccess();
+      return;
+    }
+
+    if (!selectedTask && !permissions.canCreateTask) {
+      showNoAccess();
+      return;
+    }
+
     if (!taskTitle.trim()) return;
 
     const labels = taskLabels
@@ -318,6 +412,7 @@ export default function Home() {
           assigneeId,
           deadline,
           priority,
+          createdBy: currentUser.id,
         };
 
         await setDoc(doc(db, "tasks", String(newTask.id)), newTask);
@@ -334,18 +429,28 @@ export default function Home() {
   const deleteTask = async (id: number) => {
     const task = tasks.find((item) => item.id === id);
 
+    if (!task) return;
+
+    if (!canDeleteTask(task)) {
+      showNoAccess();
+      return;
+    }
+
     await deleteDoc(doc(db, "tasks", String(id)));
 
     setIsTaskModalOpen(false);
 
-    if (task) {
-      addLog(`تسک ${task.code} حذف شد`);
-      notify(`تسک ${task.code} حذف شد`);
-    }
+    addLog(`تسک ${task.code} حذف شد`);
+    notify(`تسک ${task.code} حذف شد`);
   };
 
   const addComment = async () => {
     if (!selectedTask || !commentText.trim()) return;
+
+    if (!canEditTask(selectedTask)) {
+      showNoAccess();
+      return;
+    }
 
     const currentTask = tasks.find((task) => task.id === selectedTask.id);
 
@@ -362,7 +467,7 @@ export default function Home() {
         {
           id: Date.now(),
           text: commentText,
-          author: "Anahita",
+          author: currentUser.name,
         },
       ],
     };
@@ -380,6 +485,11 @@ export default function Home() {
 
   const addAttachment = async (files: FileList | null) => {
     if (!selectedTask || !files) return;
+
+    if (!canEditTask(selectedTask)) {
+      showNoAccess();
+      return;
+    }
 
     const currentTask = tasks.find((task) => task.id === selectedTask.id);
 
@@ -403,18 +513,38 @@ export default function Home() {
   };
 
   const openNewColumnModal = () => {
+    if (!permissions.canCreateColumn) {
+      showNoAccess();
+      return;
+    }
+
     setEditingColumnKey(null);
     setColumnTitle("");
     setIsColumnModalOpen(true);
   };
 
   const openEditColumnModal = (column: Column) => {
+    if (!permissions.canEditColumn) {
+      showNoAccess();
+      return;
+    }
+
     setEditingColumnKey(column.key);
     setColumnTitle(column.label);
     setIsColumnModalOpen(true);
   };
 
   const saveColumn = async () => {
+    if (editingColumnKey && !permissions.canEditColumn) {
+      showNoAccess();
+      return;
+    }
+
+    if (!editingColumnKey && !permissions.canCreateColumn) {
+      showNoAccess();
+      return;
+    }
+
     if (!columnTitle.trim()) return;
 
     const title = columnTitle;
@@ -451,6 +581,11 @@ export default function Home() {
   };
 
   const deleteColumn = async (key: string) => {
+    if (!permissions.canDeleteColumn) {
+      showNoAccess();
+      return;
+    }
+
     if (!confirm("با حذف ستون، تسک‌های داخل آن هم حذف می‌شوند. مطمئنی؟")) return;
 
     const columnTasks = tasks.filter((task) => task.status === key);
@@ -465,8 +600,16 @@ export default function Home() {
 
   const onDropToColumn = async (targetColumnKey: string) => {
     if (draggedColumnKey) {
+      if (!permissions.canDragColumns) {
+        showNoAccess();
+        setDraggedColumnKey(null);
+        return;
+      }
+
       const fromIndex = columns.findIndex((column) => column.key === draggedColumnKey);
       const toIndex = columns.findIndex((column) => column.key === targetColumnKey);
+
+      if (fromIndex === -1 || toIndex === -1) return;
 
       const updated = [...columns];
 
@@ -491,6 +634,12 @@ export default function Home() {
       const currentTask = tasks.find((task) => task.id === draggedTask.id);
 
       if (!currentTask) return;
+
+      if (!canEditTask(currentTask)) {
+        showNoAccess();
+        setDraggedTask(null);
+        return;
+      }
 
       const updatedTask: Task = {
         ...currentTask,
@@ -538,6 +687,10 @@ export default function Home() {
     ? tasks.find((task) => task.id === selectedTask.id)
     : null;
 
+  const taskModalCanEdit = selectedTask
+    ? canEditTask(currentSelectedTask || selectedTask)
+    : permissions.canCreateTask;
+
   const priorityStyle: Record<Priority, string> = {
     low: "bg-slate-100 text-slate-700 border-slate-200",
     medium: "bg-blue-50 text-blue-700 border-blue-200",
@@ -574,12 +727,14 @@ export default function Home() {
             <div className="mb-3 flex items-center justify-between">
               <p className="text-sm font-bold">پروژه‌ها</p>
 
-              <button
-                onClick={() => setIsProjectModalOpen(true)}
-                className="text-xs font-bold text-blue-600"
-              >
-                + جدید
-              </button>
+              {permissions.canCreateProject && (
+                <button
+                  onClick={() => setIsProjectModalOpen(true)}
+                  className="text-xs font-bold text-blue-600"
+                >
+                  + جدید
+                </button>
+              )}
             </div>
 
             <input
@@ -607,12 +762,14 @@ export default function Home() {
                     <span className="mr-2 text-xs text-slate-400">({project.key})</span>
                   </button>
 
-                  <button
-                    onClick={() => deleteProject(project.id)}
-                    className="ml-2 rounded-full px-2 py-1 text-xs text-red-500 opacity-0 transition hover:bg-red-50 group-hover:opacity-100"
-                  >
-                    حذف
-                  </button>
+                  {permissions.canDeleteProject && (
+                    <button
+                      onClick={() => deleteProject(project.id)}
+                      className="ml-2 rounded-full px-2 py-1 text-xs text-red-500 opacity-0 transition hover:bg-red-50 group-hover:opacity-100"
+                    >
+                      حذف
+                    </button>
+                  )}
                 </div>
               ))}
 
@@ -634,31 +791,35 @@ export default function Home() {
             <button className="w-full rounded-2xl px-4 py-3 text-right text-slate-600 hover:bg-slate-100">
               گزارش‌ها
             </button>
-            <button className="w-full rounded-2xl px-4 py-3 text-right text-slate-600 hover:bg-slate-100">
-              تنظیمات تیم
-            </button>
+            {permissions.canManageTeam && (
+              <button className="w-full rounded-2xl px-4 py-3 text-right text-slate-600 hover:bg-slate-100">
+                تنظیمات تیم
+              </button>
+            )}
           </nav>
 
-          <div className="mt-10 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-            <p className="mb-3 text-sm font-bold">اعضای تیم</p>
+          {permissions.canManageTeam && (
+            <div className="mt-10 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+              <p className="mb-3 text-sm font-bold">اعضای تیم</p>
 
-            <div className="space-y-3">
-              {users.map((user) => (
-                <div key={user.id} className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">
-                      {user.avatar}
-                    </div>
+              <div className="space-y-3">
+                {users.map((user) => (
+                  <div key={user.id} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">
+                        {user.avatar}
+                      </div>
 
-                    <div>
-                      <p className="text-sm font-medium">{user.name}</p>
-                      <p className="text-[11px] text-slate-400">{user.role}</p>
+                      <div>
+                        <p className="text-sm font-medium">{user.name}</p>
+                        <p className="text-[11px] text-slate-400">{user.role}</p>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </aside>
 
         <main className="flex-1 overflow-hidden p-6">
@@ -672,13 +833,34 @@ export default function Home() {
                   <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">
                     {activeProject?.name}
                   </span>
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
+                    {currentUser.role}
+                  </span>
                 </div>
 
                 <h1 className="text-3xl font-black tracking-tight">RahBoard</h1>
-                <p className="mt-1 text-sm text-slate-500">مدیریت پروژه و تسک‌های تیم EFEX</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  مدیریت پروژه و تسک‌های تیم EFEX
+                </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-3">
+                <div className="rounded-2xl border border-slate-200 bg-white px-4 py-2">
+                  <p className="mb-1 text-[11px] font-bold text-slate-400">کاربر فعلی</p>
+
+                  <select
+                    value={currentUserId}
+                    onChange={(e) => setCurrentUserId(Number(e.target.value))}
+                    className="bg-transparent text-sm font-bold outline-none"
+                  >
+                    {users.map((user) => (
+                      <option key={user.id} value={user.id}>
+                        {user.name} - {user.role}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 <select
                   value={activeProjectId}
                   onChange={(e) => setActiveProjectId(Number(e.target.value))}
@@ -691,29 +873,35 @@ export default function Home() {
                   ))}
                 </select>
 
-                <button
-                  onClick={() => setIsProjectModalOpen(true)}
-                  className="rounded-2xl bg-slate-900 px-5 py-3 font-medium text-white shadow-lg transition hover:-translate-y-0.5"
-                >
-                  افزودن پروژه
-                </button>
+                {permissions.canCreateProject && (
+                  <button
+                    onClick={() => setIsProjectModalOpen(true)}
+                    className="rounded-2xl bg-slate-900 px-5 py-3 font-medium text-white shadow-lg transition hover:-translate-y-0.5"
+                  >
+                    افزودن پروژه
+                  </button>
+                )}
 
-                <button
-                  onClick={openNewColumnModal}
-                  className="rounded-2xl bg-emerald-600 px-5 py-3 font-medium text-white shadow-lg shadow-emerald-200 transition hover:-translate-y-0.5 hover:bg-emerald-700"
-                >
-                  افزودن ستون
-                </button>
+                {permissions.canCreateColumn && (
+                  <button
+                    onClick={openNewColumnModal}
+                    className="rounded-2xl bg-emerald-600 px-5 py-3 font-medium text-white shadow-lg shadow-emerald-200 transition hover:-translate-y-0.5 hover:bg-emerald-700"
+                  >
+                    افزودن ستون
+                  </button>
+                )}
 
-                <button
-                  onClick={openNewTaskModal}
-                  className="rounded-2xl bg-blue-600 px-5 py-3 font-medium text-white shadow-lg shadow-blue-200 transition hover:-translate-y-0.5 hover:bg-blue-700"
-                >
-                  افزودن تسک
-                </button>
+                {permissions.canCreateTask && (
+                  <button
+                    onClick={openNewTaskModal}
+                    className="rounded-2xl bg-blue-600 px-5 py-3 font-medium text-white shadow-lg shadow-blue-200 transition hover:-translate-y-0.5 hover:bg-blue-700"
+                  >
+                    افزودن تسک
+                  </button>
+                )}
 
                 <div className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-900 text-sm font-bold text-white shadow-lg">
-                  A
+                  {currentUser.avatar}
                 </div>
               </div>
             </div>
@@ -783,13 +971,20 @@ export default function Home() {
                   className="min-h-[560px] w-[315px] rounded-3xl border border-slate-200 bg-white/75 p-4 shadow-xl shadow-slate-200/60 backdrop-blur"
                 >
                   <div
-                    draggable
-                    onDragStart={() => setDraggedColumnKey(column.key)}
-                    className="mb-4 flex cursor-grab items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-3"
+                    draggable={permissions.canDragColumns}
+                    onDragStart={() => {
+                      if (!permissions.canDragColumns) return;
+                      setDraggedColumnKey(column.key);
+                    }}
+                    className={`mb-4 flex items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-3 ${
+                      permissions.canDragColumns ? "cursor-grab" : "cursor-default"
+                    }`}
                   >
                     <div>
                       <h2 className="text-sm font-black">{column.label}</h2>
-                      <p className="mt-1 text-[11px] text-slate-400">Drag column</p>
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        {permissions.canDragColumns ? "Drag column" : "View only"}
+                      </p>
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -797,19 +992,23 @@ export default function Home() {
                         {filteredTasks.filter((task) => task.status === column.key).length}
                       </span>
 
-                      <button
-                        onClick={() => openEditColumnModal(column)}
-                        className="text-xs font-medium text-blue-600 hover:text-blue-800"
-                      >
-                        ویرایش
-                      </button>
+                      {permissions.canEditColumn && (
+                        <button
+                          onClick={() => openEditColumnModal(column)}
+                          className="text-xs font-medium text-blue-600 hover:text-blue-800"
+                        >
+                          ویرایش
+                        </button>
+                      )}
 
-                      <button
-                        onClick={() => deleteColumn(column.key)}
-                        className="text-xs font-medium text-red-500 hover:text-red-700"
-                      >
-                        حذف
-                      </button>
+                      {permissions.canDeleteColumn && (
+                        <button
+                          onClick={() => deleteColumn(column.key)}
+                          className="text-xs font-medium text-red-500 hover:text-red-700"
+                        >
+                          حذف
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -818,13 +1017,20 @@ export default function Home() {
                       .filter((task) => task.status === column.key)
                       .map((task) => {
                         const assignee = users.find((user) => user.id === task.assigneeId);
+                        const creator = users.find((user) => user.id === task.createdBy);
 
                         return (
                           <div
                             key={task.id}
-                            draggable
+                            draggable={canEditTask(task)}
                             onDragStart={(e) => {
                               e.stopPropagation();
+
+                              if (!canEditTask(task)) {
+                                showNoAccess();
+                                return;
+                              }
+
                               setDraggedTask(task);
                               setDraggedColumnKey(null);
                             }}
@@ -833,19 +1039,25 @@ export default function Home() {
                           >
                             <div className="mb-3 flex items-start justify-between gap-2">
                               <div>
-                                <span className="text-xs font-black text-blue-600">{task.code}</span>
-                                <h3 className="mt-1 text-sm font-bold leading-6">{task.title}</h3>
+                                <span className="text-xs font-black text-blue-600">
+                                  {task.code}
+                                </span>
+                                <h3 className="mt-1 text-sm font-bold leading-6">
+                                  {task.title}
+                                </h3>
                               </div>
 
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  deleteTask(task.id);
-                                }}
-                                className="rounded-full px-2 py-1 text-xs text-red-500 opacity-70 hover:bg-red-50 hover:opacity-100"
-                              >
-                                حذف
-                              </button>
+                              {canDeleteTask(task) && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    deleteTask(task.id);
+                                  }}
+                                  className="rounded-full px-2 py-1 text-xs text-red-500 opacity-70 hover:bg-red-50 hover:opacity-100"
+                                >
+                                  حذف
+                                </button>
+                              )}
                             </div>
 
                             {task.description && (
@@ -853,6 +1065,10 @@ export default function Home() {
                                 {task.description}
                               </p>
                             )}
+
+                            <div className="mt-3 text-[11px] text-slate-400">
+                              سازنده: {creator ? creator.name : "نامشخص"}
+                            </div>
 
                             <div className="mt-4 flex flex-wrap gap-1">
                               {task.labels.map((label) => (
@@ -872,7 +1088,9 @@ export default function Home() {
                                     <div className="flex h-7 w-7 items-center justify-center rounded-full bg-slate-900 text-[10px] font-bold text-white">
                                       {assignee.avatar}
                                     </div>
-                                    <span className="text-xs text-slate-500">{assignee.name}</span>
+                                    <span className="text-xs text-slate-500">
+                                      {assignee.name}
+                                    </span>
                                   </>
                                 ) : (
                                   <span className="text-xs text-slate-400">بدون مسئول</span>
@@ -882,7 +1100,9 @@ export default function Home() {
                               <span
                                 className={`flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-bold ${priorityStyle[task.priority]}`}
                               >
-                                <span className={`h-2 w-2 rounded-full ${priorityDot[task.priority]}`} />
+                                <span
+                                  className={`h-2 w-2 rounded-full ${priorityDot[task.priority]}`}
+                                />
                                 {task.priority}
                               </span>
                             </div>
@@ -890,7 +1110,9 @@ export default function Home() {
                             <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3 text-xs text-slate-400">
                               <span>💬 {task.comments.length}</span>
                               <span>📎 {task.attachments.length}</span>
-                              <span>{task.deadline ? `⏰ ${task.deadline}` : "بدون ددلاین"}</span>
+                              <span>
+                                {task.deadline ? `⏰ ${task.deadline}` : "بدون ددلاین"}
+                              </span>
                             </div>
                           </div>
                         );
@@ -922,37 +1144,56 @@ export default function Home() {
           <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
             <h2 className="mb-5 text-xl font-black">افزودن پروژه</h2>
 
-            <div className="space-y-4">
-              <input
-                value={projectName}
-                onChange={(e) => setProjectName(e.target.value)}
-                placeholder="نام پروژه..."
-                className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
-              />
+            {!permissions.canCreateProject ? (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-700">
+                شما اجازه ساخت پروژه جدید را ندارید.
+              </div>
+            ) : (
+              <>
+                <div className="space-y-4">
+                  <input
+                    value={projectName}
+                    onChange={(e) => setProjectName(e.target.value)}
+                    placeholder="نام پروژه..."
+                    className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                  />
 
-              <input
-                value={projectKey}
-                onChange={(e) => setProjectKey(e.target.value)}
-                placeholder="کد پروژه، مثلا RB"
-                className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
-              />
-            </div>
+                  <input
+                    value={projectKey}
+                    onChange={(e) => setProjectKey(e.target.value)}
+                    placeholder="کد پروژه، مثلا RB"
+                    className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                  />
+                </div>
 
-            <div className="mt-5 flex gap-3">
-              <button
-                onClick={addProject}
-                className="rounded-2xl bg-slate-900 px-5 py-3 text-white"
-              >
-                ساخت پروژه
-              </button>
+                <div className="mt-5 flex gap-3">
+                  <button
+                    onClick={addProject}
+                    className="rounded-2xl bg-slate-900 px-5 py-3 text-white"
+                  >
+                    ساخت پروژه
+                  </button>
 
-              <button
-                onClick={() => setIsProjectModalOpen(false)}
-                className="rounded-2xl bg-slate-100 px-5 py-3"
-              >
-                انصراف
-              </button>
-            </div>
+                  <button
+                    onClick={() => setIsProjectModalOpen(false)}
+                    className="rounded-2xl bg-slate-100 px-5 py-3"
+                  >
+                    انصراف
+                  </button>
+                </div>
+              </>
+            )}
+
+            {!permissions.canCreateProject && (
+              <div className="mt-5 flex gap-3">
+                <button
+                  onClick={() => setIsProjectModalOpen(false)}
+                  className="rounded-2xl bg-slate-100 px-5 py-3"
+                >
+                  بستن
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -967,17 +1208,26 @@ export default function Home() {
             <input
               value={columnTitle}
               onChange={(e) => setColumnTitle(e.target.value)}
+              disabled={
+                editingColumnKey
+                  ? !permissions.canEditColumn
+                  : !permissions.canCreateColumn
+              }
               placeholder="عنوان ستون..."
-              className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-green-500"
+              className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-green-500 disabled:bg-slate-100 disabled:text-slate-400"
             />
 
             <div className="mt-5 flex gap-3">
-              <button
-                onClick={saveColumn}
-                className="rounded-2xl bg-green-600 px-5 py-3 font-medium text-white"
-              >
-                ذخیره
-              </button>
+              {(editingColumnKey
+                ? permissions.canEditColumn
+                : permissions.canCreateColumn) && (
+                <button
+                  onClick={saveColumn}
+                  className="rounded-2xl bg-green-600 px-5 py-3 font-medium text-white"
+                >
+                  ذخیره
+                </button>
+              )}
 
               <button
                 onClick={() => setIsColumnModalOpen(false)}
@@ -1013,13 +1263,20 @@ export default function Home() {
               </div>
             )}
 
+            {!taskModalCanEdit && (
+              <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-700">
+                شما فقط اجازه مشاهده این تسک را دارید.
+              </div>
+            )}
+
             <div className="grid gap-5 md:grid-cols-2">
               <div className="md:col-span-2">
                 <label className="mb-2 block text-sm font-medium">عنوان تسک</label>
                 <input
                   value={taskTitle}
+                  disabled={!taskModalCanEdit}
                   onChange={(e) => setTaskTitle(e.target.value)}
-                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-400"
                 />
               </div>
 
@@ -1027,9 +1284,10 @@ export default function Home() {
                 <label className="mb-2 block text-sm font-medium">توضیحات</label>
                 <textarea
                   value={taskDescription}
+                  disabled={!taskModalCanEdit}
                   onChange={(e) => setTaskDescription(e.target.value)}
                   rows={5}
-                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500 disabled:bg-slate-100 disabled:text-slate-400"
                 />
               </div>
 
@@ -1037,9 +1295,10 @@ export default function Home() {
                 <label className="mb-2 block text-sm font-medium">لیبل‌ها</label>
                 <input
                   value={taskLabels}
+                  disabled={!taskModalCanEdit}
                   onChange={(e) => setTaskLabels(e.target.value)}
                   placeholder="مثلا: اپ, فرانت, فوری"
-                  className="w-full rounded-2xl border border-slate-200 px-4 py-3"
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 disabled:bg-slate-100 disabled:text-slate-400"
                 />
               </div>
 
@@ -1047,10 +1306,11 @@ export default function Home() {
                 <label className="mb-2 block text-sm font-medium">مسئول</label>
                 <select
                   value={taskAssigneeId ?? ""}
+                  disabled={!taskModalCanEdit}
                   onChange={(e) =>
                     setTaskAssigneeId(e.target.value ? Number(e.target.value) : null)
                   }
-                  className="w-full rounded-2xl border border-slate-200 px-4 py-3"
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 disabled:bg-slate-100 disabled:text-slate-400"
                 >
                   <option value="">بدون مسئول</option>
                   {users.map((user) => (
@@ -1066,8 +1326,9 @@ export default function Home() {
                 <input
                   type="date"
                   value={taskDeadline}
+                  disabled={!taskModalCanEdit}
                   onChange={(e) => setTaskDeadline(e.target.value)}
-                  className="w-full rounded-2xl border border-slate-200 px-4 py-3"
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 disabled:bg-slate-100 disabled:text-slate-400"
                 />
               </div>
 
@@ -1075,8 +1336,9 @@ export default function Home() {
                 <label className="mb-2 block text-sm font-medium">اهمیت</label>
                 <select
                   value={taskPriority}
+                  disabled={!taskModalCanEdit}
                   onChange={(e) => setTaskPriority(e.target.value as Priority)}
-                  className="w-full rounded-2xl border border-slate-200 px-4 py-3"
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 disabled:bg-slate-100 disabled:text-slate-400"
                 >
                   <option value="low">Low</option>
                   <option value="medium">Medium</option>
@@ -1086,29 +1348,36 @@ export default function Home() {
               </div>
             </div>
 
-            <button
-              onClick={saveTask}
-              className="my-8 rounded-2xl bg-blue-600 px-6 py-3 font-medium text-white shadow-lg shadow-blue-200 transition hover:bg-blue-700"
-            >
-              ذخیره
-            </button>
+            {taskModalCanEdit && (
+              <button
+                onClick={saveTask}
+                className="my-8 rounded-2xl bg-blue-600 px-6 py-3 font-medium text-white shadow-lg shadow-blue-200 transition hover:bg-blue-700"
+              >
+                ذخیره
+              </button>
+            )}
 
             {selectedTask && currentSelectedTask && (
               <>
                 <div className="mb-8 rounded-3xl border border-slate-200 bg-slate-50 p-5">
                   <h3 className="mb-4 text-xl font-black">فایل‌ها</h3>
 
-                  <input
-                    type="file"
-                    multiple
-                    accept="image/*,video/*"
-                    onChange={(e) => addAttachment(e.target.files)}
-                    className="mb-4 block w-full rounded-2xl border border-slate-200 bg-white p-3"
-                  />
+                  {taskModalCanEdit && (
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*,video/*"
+                      onChange={(e) => addAttachment(e.target.files)}
+                      className="mb-4 block w-full rounded-2xl border border-slate-200 bg-white p-3"
+                    />
+                  )}
 
                   <div className="grid grid-cols-2 gap-4">
                     {currentSelectedTask.attachments.map((file) => (
-                      <div key={file.id} className="rounded-2xl border border-slate-200 bg-white p-3">
+                      <div
+                        key={file.id}
+                        className="rounded-2xl border border-slate-200 bg-white p-3"
+                      >
                         {file.type.startsWith("image/") && (
                           <img
                             src={file.url}
@@ -1128,6 +1397,12 @@ export default function Home() {
                         <p className="mt-2 truncate text-xs text-slate-500">{file.name}</p>
                       </div>
                     ))}
+
+                    {currentSelectedTask.attachments.length === 0 && (
+                      <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-4 text-sm text-slate-400">
+                        فایلی اضافه نشده.
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1137,27 +1412,37 @@ export default function Home() {
                   <div className="space-y-3">
                     {currentSelectedTask.comments.map((comment) => (
                       <div key={comment.id} className="rounded-2xl bg-white p-4 shadow-sm">
-                        <div className="mb-1 text-xs font-bold text-slate-400">{comment.author}</div>
+                        <div className="mb-1 text-xs font-bold text-slate-400">
+                          {comment.author}
+                        </div>
                         {comment.text}
                       </div>
                     ))}
+
+                    {currentSelectedTask.comments.length === 0 && (
+                      <div className="rounded-2xl bg-white p-4 text-sm text-slate-400">
+                        هنوز کامنتی ثبت نشده.
+                      </div>
+                    )}
                   </div>
 
-                  <div className="mt-5 flex gap-3">
-                    <input
-                      value={commentText}
-                      onChange={(e) => setCommentText(e.target.value)}
-                      placeholder="کامنت جدید... برای منشن از @Anahita استفاده کن"
-                      className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none focus:border-blue-500"
-                    />
+                  {taskModalCanEdit && (
+                    <div className="mt-5 flex gap-3">
+                      <input
+                        value={commentText}
+                        onChange={(e) => setCommentText(e.target.value)}
+                        placeholder="کامنت جدید... برای منشن از @Anahita استفاده کن"
+                        className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none focus:border-blue-500"
+                      />
 
-                    <button
-                      onClick={addComment}
-                      className="rounded-2xl bg-slate-900 px-5 py-3 text-white transition hover:bg-black"
-                    >
-                      ارسال
-                    </button>
-                  </div>
+                      <button
+                        onClick={addComment}
+                        className="rounded-2xl bg-slate-900 px-5 py-3 text-white transition hover:bg-black"
+                      >
+                        ارسال
+                      </button>
+                    </div>
+                  )}
                 </div>
               </>
             )}
