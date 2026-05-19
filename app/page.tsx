@@ -47,6 +47,17 @@ type Estimate = "small" | "medium" | "large";
 type ShiftNeed = "morning" | "evening" | "night" | "any";
 type ActiveView = "board" | "backlog" | "myTasks" | "reports" | "imports" | "teamSettings";
 type SprintStatus = "planned" | "active" | "closed";
+type ThemeMode = "light" | "dark";
+
+type WorkSchedule = {
+  id: number;
+  userId: number;
+  date: string;
+  isOff: boolean;
+  startTime: string;
+  endTime: string;
+  note: string;
+};
 
 type User = {
   id: number;
@@ -97,6 +108,7 @@ type Task = {
   taskType?: TaskType;
   errorType?: ErrorType;
   estimate?: Estimate;
+  estimatedHours?: number;
   shiftNeed?: ShiftNeed;
   autoAssigned?: boolean;
   assignmentReason?: string;
@@ -244,6 +256,17 @@ const normalizeEstimate = (value: string): Estimate => {
   return "medium";
 };
 
+const normalizeEstimatedHours = (value: unknown) => {
+  const normalized = String(value ?? "")
+    .replace("ساعت", "")
+    .replace("h", "")
+    .replace(",", ".")
+    .trim();
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+};
+
 const normalizeTaskType = (value: string): TaskType => {
   const normalized = value.toLowerCase().trim();
   if (["feature", "story"].includes(normalized)) return "feature";
@@ -334,6 +357,7 @@ type ImportPreviewRow = {
   taskType: TaskType;
   errorType: ErrorType;
   estimate: Estimate;
+  estimatedHours: number;
 };
 
 export default function Home() {
@@ -359,6 +383,15 @@ export default function Home() {
   const permissions = rolePermissions[currentUser.role];
   const [activeView, setActiveView] = useState<ActiveView>("board");
   const [isBoardMenuOpen, setIsBoardMenuOpen] = useState(false);
+  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+  const [themeMode, setThemeMode] = useState<ThemeMode>("light");
+  const [isWorkScheduleModalOpen, setIsWorkScheduleModalOpen] = useState(false);
+  const [workSchedules, setWorkSchedules] = useState<WorkSchedule[]>([]);
+  const [workDate, setWorkDate] = useState("");
+  const [workIsOff, setWorkIsOff] = useState(false);
+  const [workStartTime, setWorkStartTime] = useState("09:00");
+  const [workEndTime, setWorkEndTime] = useState("17:00");
+  const [workNote, setWorkNote] = useState("");
 
   const [projects, setProjects] = useState<Project[]>([
     { id: 1, name: "راه برد محصول", key: "RB", createdAt: 1 },
@@ -406,6 +439,7 @@ export default function Home() {
   const [taskType, setTaskType] = useState<TaskType>("bug");
   const [errorType, setErrorType] = useState<ErrorType>("frontend");
   const [taskEstimate, setTaskEstimate] = useState<Estimate>("medium");
+  const [taskEstimatedHours, setTaskEstimatedHours] = useState(0);
   const [shiftNeed, setShiftNeed] = useState<ShiftNeed>("any");
   const [taskSprintId, setTaskSprintId] = useState<number | null>(null);
   const [taskDefaultStatus, setTaskDefaultStatus] = useState<string | null>(null);
@@ -458,6 +492,40 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const savedTheme = window.localStorage.getItem("rahboard-theme") as ThemeMode | null;
+    const nextTheme = savedTheme || "light";
+    setThemeMode(nextTheme);
+    document.documentElement.classList.toggle("dark", nextTheme === "dark");
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    document.documentElement.classList.toggle("dark", themeMode === "dark");
+    window.localStorage.setItem("rahboard-theme", themeMode);
+  }, [themeMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const saved = window.localStorage.getItem("rahboard-work-schedules");
+    if (!saved) return;
+
+    try {
+      setWorkSchedules(JSON.parse(saved));
+    } catch (error) {
+      console.error("Work schedule load error:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("rahboard-work-schedules", JSON.stringify(workSchedules));
+  }, [workSchedules]);
+
+  useEffect(() => {
     if (appUser) {
       setCurrentUserId(appUser.id);
     }
@@ -495,6 +563,39 @@ export default function Home() {
 
   const showNoAccess = () => {
     notify("شما دسترسی انجام این عملیات را ندارید");
+  };
+
+
+  const openWorkScheduleModal = () => {
+    const today = new Date().toISOString().slice(0, 10);
+    setWorkDate(today);
+    setWorkIsOff(false);
+    setWorkStartTime("09:00");
+    setWorkEndTime("17:00");
+    setWorkNote("");
+    setIsProfileMenuOpen(false);
+    setIsWorkScheduleModalOpen(true);
+  };
+
+  const saveWorkSchedule = () => {
+    if (!workDate) return;
+
+    const newItem: WorkSchedule = {
+      id: Date.now(),
+      userId: currentUser.id,
+      date: workDate,
+      isOff: workIsOff,
+      startTime: workIsOff ? "" : workStartTime,
+      endTime: workIsOff ? "" : workEndTime,
+      note: workNote.trim(),
+    };
+
+    setWorkSchedules((prev) => [
+      newItem,
+      ...prev.filter((item) => !(item.userId === currentUser.id && item.date === workDate)),
+    ]);
+    setIsWorkScheduleModalOpen(false);
+    notify(workIsOff ? "روز آف/مرخصی ثبت شد" : "ساعت کاری ثبت شد");
   };
 
   const canEditTask = (task: Task) => {
@@ -647,6 +748,12 @@ export default function Home() {
   const backlogTasks = useMemo(
     () => projectTasks.filter((task) => !task.sprintId),
     [projectTasks]
+  );
+
+
+  const sprintEstimatedHours = useMemo(
+    () => boardTasks.reduce((sum, task) => sum + (Number(task.estimatedHours) || 0), 0),
+    [boardTasks]
   );
 
   const activeTasks = useMemo(
@@ -1011,6 +1118,7 @@ export default function Home() {
     setTaskType("bug");
     setErrorType("frontend");
     setTaskEstimate("medium");
+    setTaskEstimatedHours(0);
     setShiftNeed("any");
     setTaskSprintId(defaultSprintId === undefined ? activeSprintId : defaultSprintId);
     setTaskDefaultStatus(defaultStatus || columns[0]?.key || "todo");
@@ -1029,6 +1137,7 @@ export default function Home() {
     setTaskType(task.taskType || "bug");
     setErrorType(task.errorType || "frontend");
     setTaskEstimate(task.estimate || "medium");
+    setTaskEstimatedHours(Number(task.estimatedHours) || 0);
     setShiftNeed(task.shiftNeed || "any");
     setTaskSprintId(task.sprintId ?? null);
     setTaskDefaultStatus(task.status);
@@ -1090,6 +1199,7 @@ export default function Home() {
           taskType,
           errorType,
           estimate: taskEstimate,
+          estimatedHours: taskEstimatedHours,
           shiftNeed,
           sprintId: taskSprintId,
         };
@@ -1120,6 +1230,7 @@ export default function Home() {
           taskType,
           errorType,
           estimate: taskEstimate,
+          estimatedHours: taskEstimatedHours,
           shiftNeed,
           autoAssigned,
           assignmentReason,
@@ -1508,6 +1619,38 @@ export default function Home() {
             taskType: normalizeTaskType(fields.issueType?.name || fields.issuetype?.name || fields.taskType || "bug"),
             errorType: normalizeErrorType(fields.errorType || ""),
             estimate: normalizeEstimate(String(fields.estimate || fields.storyPoints || "medium")),
+            estimatedHours: normalizeEstimatedHours(fields.estimatedHours || fields.timeEstimate || fields.originalEstimate || (fields.originalEstimateSeconds ? Number(fields.originalEstimateSeconds) / 3600 : "")),
+          };
+        });
+      } else if (file.name.toLowerCase().endsWith(".xlsx") || file.name.toLowerCase().endsWith(".xls")) {
+        const XLSX = await import("xlsx");
+        const arrayBuffer = await file.arrayBuffer();
+        const workbook = XLSX.read(arrayBuffer, { type: "array" });
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        const excelRows = XLSX.utils.sheet_to_json<Record<string, string | number>>(sheet, { defval: "" });
+
+        rows = excelRows.map((row) => {
+          const normalizedRow = Object.fromEntries(
+            Object.entries(row).map(([key, value]) => [key, String(value ?? "")])
+          );
+
+          return {
+            title: rowValue(normalizedRow, ["Summary", "Title", "Issue key", "Task"]) || "بدون عنوان",
+            description: rowValue(normalizedRow, ["Description"]),
+            projectKey: rowValue(normalizedRow, ["Project key", "Project Key", "Project"]) || activeProject?.key || "RB",
+            projectName: rowValue(normalizedRow, ["Project name", "Project Name"]) || activeProject?.name || "Imported Project",
+            sprintName: rowValue(normalizedRow, ["Sprint", "Sprint Name", "Fix Version/s"]),
+            status: rowValue(normalizedRow, ["Status"]) || columns[0]?.key || "todo",
+            assigneeEmail: rowValue(normalizedRow, ["Assignee email", "Assignee Email", "Assignee"]),
+            assigneeName: rowValue(normalizedRow, ["Assignee name", "Assignee Name", "Assignee"]),
+            priority: normalizePriority(rowValue(normalizedRow, ["Priority"])),
+            deadline: rowValue(normalizedRow, ["Due date", "Due Date", "Deadline"]),
+            labels: rowValue(normalizedRow, ["Labels"]).split(",").map((label) => label.trim()).filter(Boolean),
+            taskType: normalizeTaskType(rowValue(normalizedRow, ["Issue Type", "Type", "Task Type"])),
+            errorType: normalizeErrorType(rowValue(normalizedRow, ["Error Type", "Component/s", "Component"])),
+            estimate: normalizeEstimate(rowValue(normalizedRow, ["Story Points", "Estimate", "Original estimate"])),
+            estimatedHours: normalizeEstimatedHours(rowValue(normalizedRow, ["Estimated Hours", "Time Estimate", "Original estimate", "Original Estimate", "Hours"])),
           };
         });
       } else {
@@ -1532,6 +1675,7 @@ export default function Home() {
             taskType: normalizeTaskType(rowValue(row, ["Issue Type", "Type", "Task Type"])),
             errorType: normalizeErrorType(rowValue(row, ["Error Type", "Component/s", "Component"])),
             estimate: normalizeEstimate(rowValue(row, ["Story Points", "Estimate", "Original estimate"])),
+            estimatedHours: normalizeEstimatedHours(rowValue(row, ["Estimated Hours", "Time Estimate", "Original estimate", "Original Estimate", "Hours"])),
           };
         });
       }
@@ -1637,6 +1781,7 @@ export default function Home() {
         taskType: row.taskType,
         errorType: row.errorType,
         estimate: row.estimate,
+        estimatedHours: row.estimatedHours,
         shiftNeed: "any",
         source: "import",
         importedAt: now,
@@ -1654,7 +1799,7 @@ export default function Home() {
   };
 
   const exportReportCsv = () => {
-    const headers = ["Project", "Sprint", "Code", "Title", "Status", "Assignee", "Priority", "Deadline", "Estimate", "Source"];
+    const headers = ["Project", "Sprint", "Code", "Title", "Status", "Assignee", "Priority", "Deadline", "Estimate", "Estimated Hours", "Source"];
     const lines = reportTasks.map((task) => {
       const project = projects.find((item) => item.id === task.projectId);
       const sprint = sprints.find((item) => item.id === task.sprintId);
@@ -1670,6 +1815,7 @@ export default function Home() {
         task.priority,
         task.deadline,
         task.estimate || "",
+        task.estimatedHours || 0,
         task.source || "manual",
       ].map((value) => `"${String(value).replace(/"/g, '""')}"`).join(",");
     });
@@ -1862,7 +2008,7 @@ export default function Home() {
   return (
     <div
       dir="rtl"
-      className="min-h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-blue-50 text-slate-800"
+      className={`min-h-screen text-slate-800 ${themeMode === "dark" ? "bg-slate-950" : "bg-gradient-to-br from-slate-50 via-slate-100 to-blue-50"}`}
     >
       <div className="flex min-h-screen">
         <aside className="hidden w-72 shrink-0 border-l border-white/70 bg-white/70 p-5 shadow-xl shadow-slate-200/60 backdrop-blur lg:block">
@@ -1968,17 +2114,6 @@ export default function Home() {
               }`}
             >
               بک‌لاگ
-            </button>
-
-            <button
-              onClick={() => setActiveView("myTasks")}
-              className={`w-full rounded-2xl px-4 py-3 text-right font-semibold ${
-                activeView === "myTasks"
-                  ? "bg-blue-50 text-blue-700"
-                  : "text-slate-600 hover:bg-slate-100"
-              }`}
-            >
-              تسک‌های من
             </button>
 
             <button
@@ -2095,23 +2230,72 @@ export default function Home() {
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <div className="group relative">
-                    <div className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-900 text-sm font-bold text-white shadow-lg">
+                <div className="relative z-50 flex items-center gap-2">
+                  {isProfileMenuOpen && (
+                    <button
+                      type="button"
+                      aria-label="بستن منوی پروفایل"
+                      onClick={() => setIsProfileMenuOpen(false)}
+                      className="fixed inset-0 z-40 cursor-default bg-transparent"
+                    />
+                  )}
+
+                  <div className="group relative z-50">
+                    <button
+                      onClick={() => setIsProfileMenuOpen((prev) => !prev)}
+                      className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-900 text-sm font-bold text-white shadow-lg transition hover:-translate-y-0.5 hover:bg-black"
+                    >
                       {currentUser.avatar}
-                    </div>
+                    </button>
 
                     <div className="pointer-events-none absolute left-0 top-full z-[9999] mt-2 min-w-max rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 opacity-0 shadow-xl transition group-hover:opacity-100">
                       {currentUser.email}
                     </div>
-                  </div>
 
-                  <button
-                    onClick={handleLogout}
-                    className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-600 transition hover:bg-red-50 hover:text-red-600"
-                  >
-                    خروج
-                  </button>
+                    {isProfileMenuOpen && (
+                      <div className="absolute left-0 top-full z-[9999] mt-3 w-72 rounded-3xl border border-slate-200 bg-white p-3 text-right shadow-2xl shadow-slate-300/70">
+                        <div className="mb-3 rounded-2xl bg-slate-50 p-3">
+                          <p className="text-sm font-black text-slate-800">{currentUser.name}</p>
+                          <p className="mt-1 text-xs font-bold text-slate-400">{currentUser.email}</p>
+                        </div>
+
+                        <button
+                          onClick={() => {
+                            setIsProfileMenuOpen(false);
+                            setActiveView("myTasks");
+                          }}
+                          className="flex w-full items-center justify-between rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 transition hover:bg-blue-50 hover:text-blue-700"
+                        >
+                          <span>تسک‌های من</span>
+                          
+                        </button>
+
+                        <button
+                          onClick={openWorkScheduleModal}
+                          className="flex w-full items-center justify-between rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 transition hover:bg-indigo-50 hover:text-indigo-700"
+                        >
+                          <span>تنظیم ساعت کاری / مرخصی</span>
+                          <span className="rounded-xl bg-indigo-50 px-2 py-1 text-indigo-700">⌚</span>
+                        </button>
+
+                        <button
+                          onClick={() => setThemeMode(themeMode === "dark" ? "light" : "dark")}
+                          className="flex w-full items-center justify-between rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 transition hover:bg-slate-100"
+                        >
+                          <span>{themeMode === "dark" ? "لایت تم" : "دارک تم"}</span>
+                          <span className="rounded-xl bg-slate-100 px-2 py-1 text-slate-700">{themeMode === "dark" ? "☀️" : "🌙"}</span>
+                        </button>
+
+                        <button
+                          onClick={handleLogout}
+                          className="mt-2 flex w-full items-center justify-between rounded-2xl px-4 py-3 text-sm font-bold text-red-600 transition hover:bg-red-50"
+                        >
+                          <span>خروج</span>
+                          <span className="rounded-xl bg-red-50 px-2 py-1 text-red-600">⎋</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -2274,7 +2458,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="mb-5 grid gap-3 md:grid-cols-5">
+            <div className="mb-5 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
               <div className="rounded-3xl border border-slate-200 bg-white p-4">
                 <p className="text-xs font-bold text-slate-400">پیشرفت</p>
                 <p className="mt-2 text-3xl font-black text-blue-700">{pulse.progress}%</p>
@@ -2308,6 +2492,12 @@ export default function Home() {
                 <p className="text-xs font-bold text-purple-600">گلوگاه</p>
                 <p className="mt-2 text-lg font-black text-purple-700">{pulse.busiestColumn.label}</p>
                 <p className="mt-1 text-xs text-purple-600">{pulse.busiestColumn.count} تسک</p>
+              </div>
+
+              <div className="rounded-3xl border border-cyan-200 bg-cyan-50 p-4">
+                <p className="text-xs font-bold text-cyan-700">زمان تخمینی اسپرینت</p>
+                <p className="mt-2 text-3xl font-black text-cyan-700">{sprintEstimatedHours}</p>
+                <p className="mt-1 text-xs text-cyan-700">ساعت مجموع تسک‌ها</p>
               </div>
             </div>
 
@@ -2489,6 +2679,9 @@ export default function Home() {
                               <span className="rounded-full bg-slate-100 px-2 py-1 text-slate-600">
                                 {task.estimate || "medium"}
                               </span>
+                              <span className="rounded-full bg-cyan-50 px-2 py-1 text-cyan-700">
+                                ⏱ {task.estimatedHours || 0}h
+                              </span>
                             </div>
 
                             {task.autoAssigned && task.assignmentReason && (
@@ -2623,6 +2816,9 @@ export default function Home() {
                     const count = projectTasks.filter((task) => task.sprintId === sprint.id).length;
                     const done = projectTasks.filter((task) => task.sprintId === sprint.id && task.status === "done").length;
                     const progress = count ? Math.round((done / count) * 100) : 0;
+                    const hours = projectTasks
+                      .filter((task) => task.sprintId === sprint.id)
+                      .reduce((sum, task) => sum + (Number(task.estimatedHours) || 0), 0);
 
                     return (
                       <div key={sprint.id} className="rounded-3xl border border-indigo-100 bg-white p-4 shadow-sm">
@@ -2638,6 +2834,10 @@ export default function Home() {
                         </div>
 
                         <p className="min-h-10 text-sm leading-6 text-slate-500">{sprint.goal || "هدف ثبت نشده"}</p>
+
+                        <div className="mt-3 rounded-2xl border border-cyan-100 bg-cyan-50 px-3 py-2 text-xs font-bold text-cyan-700">
+                          مجموع زمان تخمینی: {hours} ساعت
+                        </div>
 
                         <div className="mt-4">
                           <div className="mb-1 flex justify-between text-xs">
@@ -2916,6 +3116,7 @@ export default function Home() {
                       <th className="p-4">کاربر</th>
                       <th className="p-4">وضعیت</th>
                       <th className="p-4">اولویت</th>
+                      <th className="p-4">زمان تخمینی</th>
                       <th className="p-4">ددلاین</th>
                     </tr>
                   </thead>
@@ -2934,6 +3135,7 @@ export default function Home() {
                           <td className="p-4">{assignee?.name || "بدون مسئول"}</td>
                           <td className="p-4">{task.status}</td>
                           <td className="p-4">{task.priority}</td>
+                          <td className="p-4">{task.estimatedHours || 0} ساعت</td>
                           <td className="p-4">{task.deadline || "-"}</td>
                         </tr>
                       );
@@ -2941,7 +3143,7 @@ export default function Home() {
 
                     {reportTasks.length === 0 && (
                       <tr>
-                        <td colSpan={8} className="p-8 text-center text-slate-400">
+                        <td colSpan={9} className="p-8 text-center text-slate-400">
                           گزارشی با این فیلترها پیدا نشد.
                         </td>
                       </tr>
@@ -2957,20 +3159,20 @@ export default function Home() {
               <div className="mb-6">
                 <h2 className="text-2xl font-black">ایمپورت فایل</h2>
                 <p className="mt-1 text-sm leading-7 text-slate-500">
-                  فایل CSV یا JSON خروجی Jira را انتخاب کن. تسک‌ها بر اساس پروژه و اسپرینت ساخته یا به موارد موجود وصل می‌شوند.
+                  فایل CSV، Excel یا JSON خروجی Jira را انتخاب کن. تسک‌ها بر اساس پروژه و اسپرینت ساخته یا به موارد موجود وصل می‌شوند.
                 </p>
               </div>
 
               <div className="mb-6 rounded-3xl border border-dashed border-blue-200 bg-blue-50 p-6">
                 <input
                   type="file"
-                  accept=".csv,.json"
+                  accept=".csv,.json,.xlsx,.xls"
                   onChange={(e) => parseImportFile(e.target.files)}
                   className="w-full rounded-2xl border border-blue-100 bg-white px-4 py-3"
                 />
 
                 <p className="mt-3 text-xs leading-6 text-blue-700">
-                  ستون‌های قابل شناسایی: Summary/Title، Description، Project Key، Project Name، Sprint، Status، Assignee، Priority، Due Date، Labels، Issue Type، Story Points.
+                  ستون‌های قابل شناسایی: Summary/Title، Description، Project Key، Project Name، Sprint، Status، Assignee، Priority، Due Date، Labels، Issue Type، Story Points، Estimated Hours.
                 </p>
               </div>
 
@@ -2997,6 +3199,7 @@ export default function Home() {
                           <th className="p-4">وضعیت</th>
                           <th className="p-4">مسئول</th>
                           <th className="p-4">اولویت</th>
+                          <th className="p-4">زمان تخمینی</th>
                           <th className="p-4">ددلاین</th>
                         </tr>
                       </thead>
@@ -3009,6 +3212,7 @@ export default function Home() {
                             <td className="p-4">{row.status}</td>
                             <td className="p-4">{row.assigneeName || row.assigneeEmail || "-"}</td>
                             <td className="p-4">{row.priority}</td>
+                            <td className="p-4">{row.estimatedHours} ساعت</td>
                             <td className="p-4">{row.deadline || "-"}</td>
                           </tr>
                         ))}
@@ -3107,6 +3311,102 @@ export default function Home() {
           )}
         </main>
       </div>
+
+      {isWorkScheduleModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl rounded-3xl bg-white p-6 shadow-2xl">
+            <div className="mb-5 flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-black">تنظیم ساعت کاری</h2>
+                <p className="mt-1 text-sm text-slate-500">روز آف، مرخصی یا ساعت کاری امروزت را ثبت کن.</p>
+              </div>
+
+              <button
+                onClick={() => setIsWorkScheduleModalOpen(false)}
+                className="rounded-full bg-slate-100 px-3 py-2 text-slate-500"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-sm font-medium">تاریخ</label>
+                <input
+                  type="date"
+                  value={workDate}
+                  onChange={(e) => setWorkDate(e.target.value)}
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3"
+                />
+              </div>
+
+              <label className="flex items-center gap-3 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold">
+                <input
+                  type="checkbox"
+                  checked={workIsOff}
+                  onChange={(e) => setWorkIsOff(e.target.checked)}
+                />
+                آف / مرخصی هستم
+              </label>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium">شروع کار</label>
+                <input
+                  type="time"
+                  value={workStartTime}
+                  disabled={workIsOff}
+                  onChange={(e) => setWorkStartTime(e.target.value)}
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 disabled:bg-slate-100"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium">پایان کار</label>
+                <input
+                  type="time"
+                  value={workEndTime}
+                  disabled={workIsOff}
+                  onChange={(e) => setWorkEndTime(e.target.value)}
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 disabled:bg-slate-100"
+                />
+              </div>
+            </div>
+
+            <textarea
+              value={workNote}
+              onChange={(e) => setWorkNote(e.target.value)}
+              placeholder="توضیح اختیاری؛ مثلا مرخصی ساعتی، جلسه خارج از شرکت..."
+              className="mt-4 min-h-28 w-full rounded-2xl border border-slate-200 px-4 py-3"
+            />
+
+            <div className="mt-5 rounded-2xl bg-slate-50 p-4">
+              <p className="mb-3 text-sm font-black">آخرین ثبت‌های من</p>
+              <div className="max-h-32 space-y-2 overflow-y-auto">
+                {workSchedules
+                  .filter((item) => item.userId === currentUser.id)
+                  .slice(0, 4)
+                  .map((item) => (
+                    <div key={item.id} className="rounded-xl bg-white px-3 py-2 text-xs text-slate-600">
+                      {item.date} · {item.isOff ? "آف / مرخصی" : `${item.startTime} تا ${item.endTime}`}
+                      {item.note ? ` · ${item.note}` : ""}
+                    </div>
+                  ))}
+
+                {workSchedules.filter((item) => item.userId === currentUser.id).length === 0 && (
+                  <p className="text-xs text-slate-400">هنوز چیزی ثبت نشده.</p>
+                )}
+              </div>
+            </div>
+
+            <button
+              onClick={saveWorkSchedule}
+              className="mt-6 rounded-2xl bg-slate-900 px-6 py-3 font-bold text-white hover:bg-black"
+            >
+              ذخیره ساعت کاری
+            </button>
+          </div>
+        </div>
+      )}
 
       {isProjectModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
@@ -3457,6 +3757,20 @@ export default function Home() {
                   <option value="medium">Medium</option>
                   <option value="large">Large</option>
                 </select>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium">زمان تخمینی</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={taskEstimatedHours}
+                  disabled={!taskModalCanEdit}
+                  onChange={(e) => setTaskEstimatedHours(Number(e.target.value) || 0)}
+                  placeholder="مثلا ۶ ساعت"
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 disabled:bg-slate-100 disabled:text-slate-400"
+                />
               </div>
 
               <div>
