@@ -45,7 +45,8 @@ type ErrorType =
   | "unknown";
 type Estimate = "small" | "medium" | "large";
 type ShiftNeed = "morning" | "evening" | "night" | "any";
-type ActiveView = "board" | "myTasks" | "reports" | "teamSettings";
+type ActiveView = "board" | "backlog" | "myTasks" | "reports" | "imports" | "teamSettings";
+type SprintStatus = "planned" | "active" | "closed";
 
 type User = {
   id: number;
@@ -67,9 +68,21 @@ type Project = {
   createdAt?: number;
 };
 
+type Sprint = {
+  id: number;
+  projectId: number;
+  name: string;
+  goal?: string;
+  startDate?: string;
+  endDate?: string;
+  status: SprintStatus;
+  createdAt?: number;
+};
+
 type Task = {
   id: number;
   projectId: number;
+  sprintId?: number | null;
   code: string;
   title: string;
   status: string;
@@ -87,6 +100,8 @@ type Task = {
   shiftNeed?: ShiftNeed;
   autoAssigned?: boolean;
   assignmentReason?: string;
+  source?: "manual" | "import";
+  importedAt?: number;
 };
 
 type Column = {
@@ -214,9 +229,117 @@ const estimateWeight: Record<Estimate, number> = {
   large: 3,
 };
 
+const normalizePriority = (value: string): Priority => {
+  const normalized = value.toLowerCase().trim();
+  if (["urgent", "highest", "blocker", "critical"].includes(normalized)) return "urgent";
+  if (["high", "major"].includes(normalized)) return "high";
+  if (["low", "minor", "lowest"].includes(normalized)) return "low";
+  return "medium";
+};
+
+const normalizeEstimate = (value: string): Estimate => {
+  const normalized = value.toLowerCase().trim();
+  if (["large", "l", "8", "13"].includes(normalized)) return "large";
+  if (["small", "s", "1", "2"].includes(normalized)) return "small";
+  return "medium";
+};
+
+const normalizeTaskType = (value: string): TaskType => {
+  const normalized = value.toLowerCase().trim();
+  if (["feature", "story"].includes(normalized)) return "feature";
+  if (["ui", "design"].includes(normalized)) return "ui";
+  if (["api"].includes(normalized)) return "api";
+  if (["deploy", "release"].includes(normalized)) return "deploy";
+  if (["test", "qa"].includes(normalized)) return "test";
+  return "bug";
+};
+
+const normalizeErrorType = (value: string): ErrorType => {
+  const normalized = value.toLowerCase().trim();
+  if (["frontend", "backend", "database", "network", "security", "devops"].includes(normalized)) {
+    return normalized as ErrorType;
+  }
+  return "unknown";
+};
+
+const parseCsv = (content: string) => {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let current = "";
+  let quoted = false;
+
+  for (let index = 0; index < content.length; index += 1) {
+    const char = content[index];
+    const next = content[index + 1];
+
+    if (char === '"' && quoted && next === '"') {
+      current += '"';
+      index += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      quoted = !quoted;
+      continue;
+    }
+
+    if (char === "," && !quoted) {
+      row.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && next === "\n") index += 1;
+      row.push(current.trim());
+      if (row.some(Boolean)) rows.push(row);
+      row = [];
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  row.push(current.trim());
+  if (row.some(Boolean)) rows.push(row);
+  return rows;
+};
+
+const rowValue = (row: Record<string, string>, keys: string[]) => {
+  const normalized = Object.fromEntries(
+    Object.entries(row).map(([key, value]) => [key.toLowerCase().trim(), value])
+  );
+
+  for (const key of keys) {
+    const value = normalized[key.toLowerCase().trim()];
+    if (value !== undefined) return value;
+  }
+
+  return "";
+};
+
+type ImportPreviewRow = {
+  title: string;
+  description: string;
+  projectKey: string;
+  projectName: string;
+  sprintName: string;
+  status: string;
+  assigneeEmail: string;
+  assigneeName: string;
+  priority: Priority;
+  deadline: string;
+  labels: string[];
+  taskType: TaskType;
+  errorType: ErrorType;
+  estimate: Estimate;
+};
+
 export default function Home() {
   const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [usersLoading, setUsersLoading] = useState(true);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
@@ -255,6 +378,16 @@ export default function Home() {
     { key: "done", label: "Done", order: 4 },
   ]);
 
+  const [sprints, setSprints] = useState<Sprint[]>([]);
+  const [activeSprintId, setActiveSprintId] = useState<number | null>(null);
+  const [isSprintModalOpen, setIsSprintModalOpen] = useState(false);
+  const [editingSprintId, setEditingSprintId] = useState<number | null>(null);
+  const [sprintName, setSprintName] = useState("");
+  const [sprintGoal, setSprintGoal] = useState("");
+  const [sprintStartDate, setSprintStartDate] = useState("");
+  const [sprintEndDate, setSprintEndDate] = useState("");
+  const [sprintStatus, setSprintStatus] = useState<SprintStatus>("planned");
+
   const [tasks, setTasks] = useState<Task[]>([]);
 
   const [draggedTask, setDraggedTask] = useState<Task | null>(null);
@@ -273,6 +406,8 @@ export default function Home() {
   const [errorType, setErrorType] = useState<ErrorType>("frontend");
   const [taskEstimate, setTaskEstimate] = useState<Estimate>("medium");
   const [shiftNeed, setShiftNeed] = useState<ShiftNeed>("any");
+  const [taskSprintId, setTaskSprintId] = useState<number | null>(null);
+  const [taskDefaultStatus, setTaskDefaultStatus] = useState<string | null>(null);
   const [commentText, setCommentText] = useState("");
 
   const [isColumnModalOpen, setIsColumnModalOpen] = useState(false);
@@ -291,10 +426,26 @@ export default function Home() {
   const [filterAssignee, setFilterAssignee] = useState("all");
   const [filterLabel, setFilterLabel] = useState("all");
 
+  const [reportFromDate, setReportFromDate] = useState("");
+  const [reportToDate, setReportToDate] = useState("");
+  const [reportSprintId, setReportSprintId] = useState("all");
+  const [reportUserId, setReportUserId] = useState("all");
+  const [reportProjectId, setReportProjectId] = useState("all");
+
+  const [importPreview, setImportPreview] = useState<ImportPreviewRow[]>([]);
+  const [importLog, setImportLog] = useState<string[]>([]);
+
   const [activityLogs, setActivityLogs] = useState<string[]>([]);
   const [notifications, setNotifications] = useState<string[]>([]);
 
   const activeProject = projects.find((project) => project.id === activeProjectId);
+  const projectSprints = useMemo(
+    () => sprints.filter((sprint) => sprint.projectId === activeProjectId),
+    [sprints, activeProjectId]
+  );
+  const activeSprint = activeSprintId
+    ? sprints.find((sprint) => sprint.id === activeSprintId) || null
+    : null;
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -369,9 +520,10 @@ export default function Home() {
         };
       });
 
-      if (firebaseUsers.length > 0) {
-        setUsers(firebaseUsers);
+      setUsers(firebaseUsers);
+      setUsersLoading(false);
 
+      if (firebaseUsers.length > 0) {
         const stillExists = firebaseUsers.some((user) => user.id === currentUserId);
 
         if (!stillExists) {
@@ -435,10 +587,46 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const q = query(collection(db, "sprints"), orderBy("createdAt", "asc"));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const firebaseSprints = snapshot.docs.map((docItem) => {
+        const data = docItem.data() as Sprint;
+
+        return {
+          ...data,
+          id: Number(docItem.id),
+          status: data.status || "planned",
+        };
+      });
+
+      setSprints(firebaseSprints);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const active = projectSprints.find((sprint) => sprint.status === "active");
+    const first = projectSprints[0];
+
+    if (activeSprintId && projectSprints.some((sprint) => sprint.id === activeSprintId)) return;
+
+    setActiveSprintId(active?.id || first?.id || null);
+  }, [projectSprints, activeSprintId]);
+
+  useEffect(() => {
     const q = query(collection(db, "tasks"), orderBy("id", "asc"));
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const firebaseTasks = snapshot.docs.map((docItem) => docItem.data() as Task);
+      const firebaseTasks = snapshot.docs.map((docItem) => {
+        const data = docItem.data() as Task;
+        return {
+          ...data,
+          sprintId: data.sprintId ?? null,
+          source: data.source || "manual",
+        };
+      });
       setTasks(firebaseTasks);
     });
 
@@ -448,6 +636,16 @@ export default function Home() {
   const projectTasks = useMemo(
     () => tasks.filter((task) => task.projectId === activeProjectId),
     [tasks, activeProjectId]
+  );
+
+  const boardTasks = useMemo(
+    () => projectTasks.filter((task) => task.sprintId === activeSprintId),
+    [projectTasks, activeSprintId]
+  );
+
+  const backlogTasks = useMemo(
+    () => projectTasks.filter((task) => !task.sprintId),
+    [projectTasks]
   );
 
   const activeTasks = useMemo(
@@ -540,14 +738,14 @@ export default function Home() {
   };
 
   const pulse = useMemo(() => {
-    const total = projectTasks.length;
-    const done = projectTasks.filter((task) => task.status === "done").length;
-    const urgent = projectTasks.filter((task) => task.priority === "urgent").length;
-    const dueSoon = projectTasks.filter((task) => {
+    const total = boardTasks.length;
+    const done = boardTasks.filter((task) => task.status === "done").length;
+    const urgent = boardTasks.filter((task) => task.priority === "urgent").length;
+    const dueSoon = boardTasks.filter((task) => {
       const days = daysUntil(task.deadline);
       return days !== null && days >= 0 && days <= 3 && task.status !== "done";
     }).length;
-    const overdue = projectTasks.filter((task) => {
+    const overdue = boardTasks.filter((task) => {
       const days = daysUntil(task.deadline);
       return days !== null && days < 0 && task.status !== "done";
     }).length;
@@ -556,7 +754,7 @@ export default function Home() {
 
     const columnLoads = columns.map((column) => ({
       label: column.label,
-      count: projectTasks.filter((task) => task.status === column.key).length,
+      count: boardTasks.filter((task) => task.status === column.key).length,
     }));
 
     const busiestColumn = columnLoads.reduce(
@@ -572,7 +770,7 @@ export default function Home() {
       message = "چند تسک فوری یا عقب‌افتاده دارید؛ بهتر است اولویت‌بندی شود.";
     } else if (dueSoon > 0 || urgent > 0 || progress < 35) {
       health = "risk";
-      message = "پروژه نیاز به توجه دارد؛ چند تسک به ددلاین نزدیک شده‌اند.";
+      message = "پروژه نیاز به بررسی دارد؛ چند تسک به ددلاین نزدیک شده‌اند.";
     }
 
     return {
@@ -586,7 +784,7 @@ export default function Home() {
       health,
       message,
     };
-  }, [projectTasks, columns]);
+  }, [boardTasks, columns]);
 
   const addUser = async () => {
     if (!permissions.canManageTeam) {
@@ -796,7 +994,7 @@ export default function Home() {
     notify("پروژه حذف شد");
   };
 
-  const openNewTaskModal = () => {
+  const openNewTaskModal = (defaultStatus?: string, defaultSprintId?: number | null) => {
     if (!permissions.canCreateTask) {
       showNoAccess();
       return;
@@ -813,6 +1011,8 @@ export default function Home() {
     setErrorType("frontend");
     setTaskEstimate("medium");
     setShiftNeed("any");
+    setTaskSprintId(defaultSprintId === undefined ? activeSprintId : defaultSprintId);
+    setTaskDefaultStatus(defaultStatus || columns[0]?.key || "todo");
     setCommentText("");
     setIsTaskModalOpen(true);
   };
@@ -829,6 +1029,8 @@ export default function Home() {
     setErrorType(task.errorType || "frontend");
     setTaskEstimate(task.estimate || "medium");
     setShiftNeed(task.shiftNeed || "any");
+    setTaskSprintId(task.sprintId ?? null);
+    setTaskDefaultStatus(task.status);
     setCommentText("");
     setIsTaskModalOpen(true);
   };
@@ -888,6 +1090,7 @@ export default function Home() {
           errorType,
           estimate: taskEstimate,
           shiftNeed,
+          sprintId: taskSprintId,
         };
 
         await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
@@ -902,9 +1105,10 @@ export default function Home() {
           id: nextId,
           projectId: activeProjectId,
           code: `${projectKey}-${nextId}`,
+          sprintId: taskSprintId,
           title,
           description,
-          status: columns[0]?.key || "todo",
+          status: taskDefaultStatus || columns[0]?.key || "todo",
           comments: [],
           attachments: [],
           labels,
@@ -918,6 +1122,7 @@ export default function Home() {
           shiftNeed,
           autoAssigned,
           assignmentReason,
+          source: "manual",
         };
 
         await setDoc(doc(db, "tasks", String(newTask.id)), newTask);
@@ -1015,6 +1220,116 @@ export default function Home() {
     await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
 
     addLog(`فایل به ${updatedTask.code} اضافه شد`);
+  };
+
+  const openNewSprintModal = () => {
+    if (!permissions.canCreateTask) {
+      showNoAccess();
+      return;
+    }
+
+    setEditingSprintId(null);
+    setSprintName("");
+    setSprintGoal("");
+    setSprintStartDate("");
+    setSprintEndDate("");
+    setSprintStatus("planned");
+    setIsSprintModalOpen(true);
+  };
+
+  const openEditSprintModal = (sprint: Sprint) => {
+    if (!permissions.canCreateTask) {
+      showNoAccess();
+      return;
+    }
+
+    setEditingSprintId(sprint.id);
+    setSprintName(sprint.name);
+    setSprintGoal(sprint.goal || "");
+    setSprintStartDate(sprint.startDate || "");
+    setSprintEndDate(sprint.endDate || "");
+    setSprintStatus(sprint.status || "planned");
+    setIsSprintModalOpen(true);
+  };
+
+  const closeSprintModal = () => {
+    setIsSprintModalOpen(false);
+    setEditingSprintId(null);
+    setSprintName("");
+    setSprintGoal("");
+    setSprintStartDate("");
+    setSprintEndDate("");
+    setSprintStatus("planned");
+  };
+
+  const saveSprint = async () => {
+    if (!permissions.canCreateTask) {
+      showNoAccess();
+      return;
+    }
+
+    if (!sprintName.trim()) return;
+
+    const sprintId = editingSprintId || Date.now();
+    const newSprint: Sprint = {
+      id: sprintId,
+      projectId: activeProjectId,
+      name: sprintName.trim(),
+      goal: sprintGoal.trim(),
+      startDate: sprintStartDate,
+      endDate: sprintEndDate,
+      status: sprintStatus,
+      createdAt: editingSprintId
+        ? sprints.find((item) => item.id === editingSprintId)?.createdAt || Date.now()
+        : Date.now(),
+    };
+
+    closeSprintModal();
+
+    await setDoc(doc(db, "sprints", String(newSprint.id)), newSprint);
+    setActiveSprintId(newSprint.id);
+    addLog(`اسپرینت ${newSprint.name} ذخیره شد`);
+    notify("اسپرینت ذخیره شد");
+  };
+
+  const deleteSprint = async (sprintId: number) => {
+    if (!permissions.canCreateTask) {
+      showNoAccess();
+      return;
+    }
+
+    if (!confirm("اسپرینت حذف شود؟ تسک‌های آن به بک‌لاگ منتقل می‌شوند.")) return;
+
+    const sprintTasks = tasks.filter((task) => task.sprintId === sprintId);
+
+    await Promise.all([
+      deleteDoc(doc(db, "sprints", String(sprintId))),
+      ...sprintTasks.map((task) =>
+        setDoc(doc(db, "tasks", String(task.id)), {
+          ...task,
+          sprintId: null,
+        })
+      ),
+    ]);
+
+    if (activeSprintId === sprintId) setActiveSprintId(null);
+    notify("اسپرینت حذف شد و تسک‌ها به بک‌لاگ برگشتند");
+  };
+
+  const moveTaskToSprint = async (task: Task, sprintId: number | null) => {
+    if (!canEditTask(task)) {
+      showNoAccess();
+      return;
+    }
+
+    const updatedTask: Task = {
+      ...task,
+      sprintId,
+    };
+
+    await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
+    notify(sprintId ? "تسک به اسپرینت منتقل شد" : "تسک به بک‌لاگ برگشت");
+    addLog(`${task.code} بین بک‌لاگ و اسپرینت جابه‌جا شد`);
   };
 
   const openNewColumnModal = () => {
@@ -1149,6 +1464,7 @@ export default function Home() {
       const updatedTask: Task = {
         ...currentTask,
         status: targetColumnKey,
+        sprintId: currentTask.sprintId ?? activeSprintId,
       };
 
       await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
@@ -1156,6 +1472,215 @@ export default function Home() {
       addLog(`تسک ${updatedTask.code} جابه‌جا شد`);
       setDraggedTask(null);
     }
+  };
+
+  const parseImportFile = async (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+
+    try {
+      const content = await file.text();
+      let rows: ImportPreviewRow[] = [];
+
+      if (file.name.toLowerCase().endsWith(".json")) {
+        const json = JSON.parse(content);
+        const items = Array.isArray(json) ? json : json.issues || json.tasks || [];
+
+        rows = items.map((item: any) => {
+          const fields = item.fields || item;
+          const project = fields.project || {};
+
+          return {
+            title: fields.summary || fields.title || item.key || "بدون عنوان",
+            description: fields.description || "",
+            projectKey: project.key || fields.projectKey || activeProject?.key || "RB",
+            projectName: project.name || fields.projectName || activeProject?.name || "Imported Project",
+            sprintName: fields.sprint || fields.sprintName || "",
+            status: fields.status?.name || fields.status || columns[0]?.key || "todo",
+            assigneeEmail: fields.assignee?.emailAddress || fields.assigneeEmail || "",
+            assigneeName: fields.assignee?.displayName || fields.assigneeName || "",
+            priority: normalizePriority(fields.priority?.name || fields.priority || "medium"),
+            deadline: fields.duedate || fields.deadline || "",
+            labels: Array.isArray(fields.labels)
+              ? fields.labels
+              : String(fields.labels || "").split(",").map((label) => label.trim()).filter(Boolean),
+            taskType: normalizeTaskType(fields.issueType?.name || fields.issuetype?.name || fields.taskType || "bug"),
+            errorType: normalizeErrorType(fields.errorType || ""),
+            estimate: normalizeEstimate(String(fields.estimate || fields.storyPoints || "medium")),
+          };
+        });
+      } else {
+        const csvRows = parseCsv(content);
+        const headers = csvRows[0] || [];
+
+        rows = csvRows.slice(1).map((values) => {
+          const row = Object.fromEntries(headers.map((header, index) => [header, values[index] || ""]));
+
+          return {
+            title: rowValue(row, ["Summary", "Title", "Issue key", "Task"]) || "بدون عنوان",
+            description: rowValue(row, ["Description"]),
+            projectKey: rowValue(row, ["Project key", "Project Key", "Project"]) || activeProject?.key || "RB",
+            projectName: rowValue(row, ["Project name", "Project Name"]) || activeProject?.name || "Imported Project",
+            sprintName: rowValue(row, ["Sprint", "Sprint Name", "Fix Version/s"]),
+            status: rowValue(row, ["Status"]) || columns[0]?.key || "todo",
+            assigneeEmail: rowValue(row, ["Assignee email", "Assignee Email", "Assignee"]),
+            assigneeName: rowValue(row, ["Assignee name", "Assignee Name", "Assignee"]),
+            priority: normalizePriority(rowValue(row, ["Priority"])),
+            deadline: rowValue(row, ["Due date", "Due Date", "Deadline"]),
+            labels: rowValue(row, ["Labels"]).split(",").map((label) => label.trim()).filter(Boolean),
+            taskType: normalizeTaskType(rowValue(row, ["Issue Type", "Type", "Task Type"])),
+            errorType: normalizeErrorType(rowValue(row, ["Error Type", "Component/s", "Component"])),
+            estimate: normalizeEstimate(rowValue(row, ["Story Points", "Estimate", "Original estimate"])),
+          };
+        });
+      }
+
+      setImportPreview(rows.filter((row) => row.title.trim()));
+      setImportLog((prev) => [`${rows.length} ردیف از فایل خوانده شد`, ...prev]);
+    } catch (error) {
+      console.error("Import parse error:", error);
+      alert("خواندن فایل با خطا مواجه شد. فایل CSV یا JSON خروجی Jira را بررسی کن.");
+    }
+  };
+
+  const importTasks = async () => {
+    if (!permissions.canCreateTask) {
+      showNoAccess();
+      return;
+    }
+
+    if (importPreview.length === 0) return;
+
+    const now = Date.now();
+    const writes: Promise<void>[] = [];
+    const localProjects = [...projects];
+    const localSprints = [...sprints];
+    const logs: string[] = [];
+
+    importPreview.forEach((row, index) => {
+      let project = localProjects.find(
+        (item) =>
+          item.key.toLowerCase() === row.projectKey.toLowerCase() ||
+          item.name.toLowerCase() === row.projectName.toLowerCase()
+      );
+
+      if (!project) {
+        project = {
+          id: now + index + 10,
+          name: row.projectName || row.projectKey,
+          key: (row.projectKey || `IMP${index}`).toUpperCase().slice(0, 8),
+          createdAt: now + index,
+        };
+
+        localProjects.push(project);
+        writes.push(setDoc(doc(db, "projects", String(project.id)), project));
+        logs.push(`پروژه ${project.name} ساخته شد`);
+      }
+
+      let sprintId: number | null = null;
+
+      if (row.sprintName.trim()) {
+        let sprint = localSprints.find(
+          (item) =>
+            item.projectId === project!.id &&
+            item.name.toLowerCase() === row.sprintName.toLowerCase()
+        );
+
+        if (!sprint) {
+          sprint = {
+            id: now + index + 10000,
+            projectId: project.id,
+            name: row.sprintName.trim(),
+            goal: "ایمپورت شده از Jira",
+            status: "planned",
+            createdAt: now + index,
+          };
+
+          localSprints.push(sprint);
+          writes.push(setDoc(doc(db, "sprints", String(sprint.id)), sprint));
+          logs.push(`اسپرینت ${sprint.name} ساخته شد`);
+        }
+
+        sprintId = sprint.id;
+      }
+
+      const assignee = users.find(
+        (user) =>
+          user.email.toLowerCase() === row.assigneeEmail.toLowerCase() ||
+          user.name.toLowerCase() === row.assigneeName.toLowerCase()
+      );
+
+      const statusColumn =
+        columns.find(
+          (column) =>
+            column.key.toLowerCase() === row.status.toLowerCase().replace(/\s+/g, "") ||
+            column.label.toLowerCase() === row.status.toLowerCase()
+        ) || columns[0];
+
+      const taskId = now + index + 100000;
+      const task: Task = {
+        id: taskId,
+        projectId: project.id,
+        sprintId,
+        code: `${project.key}-${taskId}`,
+        title: row.title,
+        status: statusColumn?.key || "todo",
+        description: row.description,
+        comments: [],
+        attachments: [],
+        labels: row.labels,
+        assigneeId: assignee?.id || null,
+        deadline: row.deadline,
+        priority: row.priority,
+        createdBy: currentUser.id,
+        taskType: row.taskType,
+        errorType: row.errorType,
+        estimate: row.estimate,
+        shiftNeed: "any",
+        source: "import",
+        importedAt: now,
+      };
+
+      writes.push(setDoc(doc(db, "tasks", String(task.id)), task));
+    });
+
+    await Promise.all(writes);
+
+    setImportLog((prev) => [`${importPreview.length} تسک ایمپورت شد`, ...logs, ...prev]);
+    setImportPreview([]);
+    notify("ایمپورت با موفقیت انجام شد");
+    addLog("تسک‌ها از فایل ایمپورت شدند");
+  };
+
+  const exportReportCsv = () => {
+    const headers = ["Project", "Sprint", "Code", "Title", "Status", "Assignee", "Priority", "Deadline", "Estimate", "Source"];
+    const lines = reportTasks.map((task) => {
+      const project = projects.find((item) => item.id === task.projectId);
+      const sprint = sprints.find((item) => item.id === task.sprintId);
+      const assignee = users.find((item) => item.id === task.assigneeId);
+
+      return [
+        project?.name || "",
+        sprint?.name || "Backlog",
+        task.code,
+        task.title,
+        task.status,
+        assignee?.name || "",
+        task.priority,
+        task.deadline,
+        task.estimate || "",
+        task.source || "manual",
+      ].map((value) => `"${String(value).replace(/"/g, '""')}"`).join(",");
+    });
+
+    const csv = [headers.join(","), ...lines].join("\n");
+    const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `rahboard-report-${Date.now()}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   const allLabels = Array.from(
@@ -1168,7 +1693,7 @@ export default function Home() {
       project.key.toLowerCase().includes(projectSearch.toLowerCase())
   );
 
-  const filteredTasks = projectTasks.filter((task) => {
+  const filteredTasks = boardTasks.filter((task) => {
     const matchesSearch =
       task.title.toLowerCase().includes(search.toLowerCase()) ||
       task.description.toLowerCase().includes(search.toLowerCase()) ||
@@ -1181,6 +1706,30 @@ export default function Home() {
 
     return matchesSearch && matchesAssignee && matchesLabel;
   });
+
+  const reportTasks = tasks.filter((task) => {
+    const projectMatch = reportProjectId === "all" || task.projectId === Number(reportProjectId);
+    const sprintMatch =
+      reportSprintId === "all" ||
+      (reportSprintId === "backlog" && !task.sprintId) ||
+      task.sprintId === Number(reportSprintId);
+    const userMatch = reportUserId === "all" || task.assigneeId === Number(reportUserId);
+
+    const deadlineTime = task.deadline ? new Date(task.deadline).getTime() : null;
+    const fromMatch =
+      !reportFromDate || (deadlineTime !== null && deadlineTime >= new Date(reportFromDate).getTime());
+    const toMatch =
+      !reportToDate || (deadlineTime !== null && deadlineTime <= new Date(reportToDate).getTime());
+
+    return projectMatch && sprintMatch && userMatch && fromMatch && toMatch;
+  });
+
+  const reportDone = reportTasks.filter((task) => task.status === "done").length;
+  const reportOverdue = reportTasks.filter((task) => {
+    const days = daysUntil(task.deadline);
+    return days !== null && days < 0 && task.status !== "done";
+  }).length;
+  const reportProgress = reportTasks.length ? Math.round((reportDone / reportTasks.length) * 100) : 0;
 
   const currentSelectedTask = selectedTask
     ? tasks.find((task) => task.id === selectedTask.id)
@@ -1265,6 +1814,23 @@ export default function Home() {
               ورود
             </button>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (authUser && usersLoading) {
+    return (
+      <div dir="rtl" className="flex min-h-screen items-center justify-center bg-slate-100 p-4 text-slate-800">
+        <div className="w-full max-w-md rounded-3xl bg-white p-7 text-center shadow-xl">
+          <div className="mx-auto mb-5 h-12 w-12 animate-spin rounded-full border-4 border-slate-200 border-t-blue-600" />
+          <h1 className="text-2xl font-black">در حال آماده‌سازی حساب شما...</h1>
+          <p className="mt-3 leading-7 text-slate-500">
+            لطفاً چند لحظه صبر کنید؛ در حال بررسی دسترسی و اطلاعات تیم هستیم.
+          </p>
+          <p className="mt-3 rounded-2xl bg-slate-50 p-3 text-sm font-mono text-slate-500">
+            {authUser.email}
+          </p>
         </div>
       </div>
     );
@@ -1393,6 +1959,17 @@ export default function Home() {
             </button>
 
             <button
+              onClick={() => setActiveView("backlog")}
+              className={`w-full rounded-2xl px-4 py-3 text-right font-semibold ${
+                activeView === "backlog"
+                  ? "bg-blue-50 text-blue-700"
+                  : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              بک‌لاگ
+            </button>
+
+            <button
               onClick={() => setActiveView("myTasks")}
               className={`w-full rounded-2xl px-4 py-3 text-right font-semibold ${
                 activeView === "myTasks"
@@ -1412,6 +1989,17 @@ export default function Home() {
               }`}
             >
               گزارش‌ها
+            </button>
+
+            <button
+              onClick={() => setActiveView("imports")}
+              className={`w-full rounded-2xl px-4 py-3 text-right font-semibold ${
+                activeView === "imports"
+                  ? "bg-blue-50 text-blue-700"
+                  : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              ایمپورت فایل
             </button>
 
             {permissions.canManageTeam && (
@@ -1490,6 +2078,10 @@ export default function Home() {
                     {activeProject?.name}
                   </span>
 
+                  <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">
+                    {activeSprint ? activeSprint.name : "بدون اسپرینت فعال"}
+                  </span>
+
                   <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
                     {currentUser.role}
                   </span>
@@ -1497,7 +2089,7 @@ export default function Home() {
 
                 <h1 className="text-3xl font-black tracking-tight">RahBoard</h1>
                 <p className="mt-1 text-sm text-slate-500">
-                  مدیریت پروژه و تسک‌های تیم افکس
+                  مدیریت پروژه، بک‌لاگ، اسپرینت و تسک‌های تیم افکس
                 </p>
               </div>
 
@@ -1527,6 +2119,19 @@ export default function Home() {
                   ))}
                 </select>
 
+                <select
+                  value={activeSprintId || ""}
+                  onChange={(e) => setActiveSprintId(e.target.value ? Number(e.target.value) : null)}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                >
+                  <option value="">انتخاب اسپرینت</option>
+                  {projectSprints.map((sprint) => (
+                    <option key={sprint.id} value={sprint.id}>
+                      {sprint.name} - {sprint.status}
+                    </option>
+                  ))}
+                </select>
+
                 {permissions.canCreateProject && (
                   <button
                     onClick={openNewProjectModal}
@@ -1546,12 +2151,21 @@ export default function Home() {
                 )}
 
                 {permissions.canCreateTask && (
-                  <button
-                    onClick={openNewTaskModal}
-                    className="rounded-2xl bg-blue-600 px-5 py-3 font-medium text-white shadow-lg shadow-blue-200 transition hover:-translate-y-0.5 hover:bg-blue-700"
-                  >
-                    افزودن تسک
-                  </button>
+                  <>
+                    <button
+                      onClick={openNewSprintModal}
+                      className="rounded-2xl bg-indigo-600 px-5 py-3 font-medium text-white shadow-lg shadow-indigo-200 transition hover:-translate-y-0.5 hover:bg-indigo-700"
+                    >
+                      ایجاد اسپرینت
+                    </button>
+
+                    <button
+                      onClick={() => openNewTaskModal()}
+                      className="rounded-2xl bg-blue-600 px-5 py-3 font-medium text-white shadow-lg shadow-blue-200 transition hover:-translate-y-0.5 hover:bg-blue-700"
+                    >
+                      افزودن تسک
+                    </button>
+                  </>
                 )}
 
                 <div className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-900 text-sm font-bold text-white shadow-lg">
@@ -1603,8 +2217,8 @@ export default function Home() {
           <section className="mb-6 rounded-3xl border border-white/70 bg-white/80 p-5 shadow-xl shadow-slate-200/60 backdrop-blur">
             <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h2 className="text-xl font-black">RahBoard Pulse</h2>
-                <p className="mt-1 text-sm text-slate-500">نبض پروژه، ریسک ددلاین و حجم کاری تیم</p>
+                <h2 className="text-xl font-black">Sprint Pulse</h2>
+                <p className="mt-1 text-sm text-slate-500">نبض اسپرینت فعال، ریسک ددلاین و حجم کاری تیم</p>
               </div>
 
               <div className={`rounded-2xl border px-4 py-3 text-sm font-bold ${healthStyle}`}>
@@ -1690,7 +2304,7 @@ export default function Home() {
                   {pulse.message}
                 </p>
                 <p className="mt-3 text-xs leading-6 text-slate-400">
-                  Auto Assign هنگام ساخت تسک، تخصص، نوع خطا، شیفت و ظرفیت آزاد دولوپرها را بررسی می‌کند.
+                  تسک‌های بدون اسپرینت در بک‌لاگ می‌مانند و با انتخاب اسپرینت به بورد فعال منتقل می‌شوند.
                 </p>
               </div>
             </div>
@@ -1720,7 +2334,7 @@ export default function Home() {
                   key={column.key}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={() => onDropToColumn(column.key)}
-                  className="min-h-[560px] w-[315px] rounded-3xl border border-slate-200 bg-white/75 p-4 shadow-xl shadow-slate-200/60 backdrop-blur"
+                  className="flex min-h-[560px] w-[315px] flex-col rounded-3xl border border-slate-200 bg-white/75 p-4 shadow-xl shadow-slate-200/60 backdrop-blur"
                 >
                   <div
                     draggable={permissions.canDragColumns}
@@ -1735,7 +2349,7 @@ export default function Home() {
                     <div>
                       <h2 className="text-sm font-black">{column.label}</h2>
                       <p className="mt-1 text-[11px] text-slate-400">
-                        {permissions.canDragColumns ? "Drag column" : "View only"}
+                        {permissions.canDragColumns ? "" : "View only"}
                       </p>
                     </div>
 
@@ -1764,7 +2378,7 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <div className="space-y-3">
+                  <div className="flex-1 space-y-3">
                     {filteredTasks
                       .filter((task) => task.status === column.key)
                       .map((task) => {
@@ -1893,6 +2507,15 @@ export default function Home() {
                         );
                       })}
                   </div>
+
+                  {permissions.canCreateTask && (
+                    <button
+                      onClick={() => openNewTaskModal(column.key, activeSprintId)}
+                      className="mt-4 w-full rounded-3xl border-2 border-dashed border-blue-200 bg-blue-50/60 px-4 py-5 text-sm font-black text-blue-700 transition hover:-translate-y-0.5 hover:border-blue-400 hover:bg-blue-50"
+                    >
+                      + افزودن تسک در {column.label}
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -1912,6 +2535,168 @@ export default function Home() {
             </div>
           </section>
             </>
+          )}
+
+          {activeView === "backlog" && (
+            <section className="rounded-3xl border border-white/70 bg-white/80 p-6 shadow-xl shadow-slate-200/60 backdrop-blur">
+              <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-2xl font-black">بک‌لاگ</h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    تسک‌هایی که هنوز وارد اسپرینت فعال نشده‌اند اینجا نگهداری می‌شوند.
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => openNewTaskModal(columns[0]?.key || "todo", null)}
+                  className="rounded-2xl bg-blue-600 px-5 py-3 font-bold text-white shadow-lg shadow-blue-200 hover:bg-blue-700"
+                >
+                  + تسک جدید در بک‌لاگ
+                </button>
+              </div>
+
+              <div className="mb-6 rounded-3xl border border-indigo-100 bg-indigo-50 p-5">
+                <div className="mb-4 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-black text-indigo-800">اسپرینت‌ها</h3>
+                    <p className="mt-1 text-sm text-indigo-600">
+                  
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={openNewSprintModal}
+                    className="rounded-2xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white hover:bg-indigo-700"
+                  >
+                    + ایجاد اسپرینت
+                  </button>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {projectSprints.map((sprint) => {
+                    const count = projectTasks.filter((task) => task.sprintId === sprint.id).length;
+                    const done = projectTasks.filter((task) => task.sprintId === sprint.id && task.status === "done").length;
+                    const progress = count ? Math.round((done / count) * 100) : 0;
+
+                    return (
+                      <div key={sprint.id} className="rounded-3xl border border-indigo-100 bg-white p-4 shadow-sm">
+                        <div className="mb-3 flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-black">{sprint.name}</p>
+                            <p className="mt-1 text-xs text-slate-400">{sprint.startDate || "-"} تا {sprint.endDate || "-"}</p>
+                          </div>
+
+                          <span className="rounded-full bg-indigo-50 px-2 py-1 text-[11px] font-bold text-indigo-700">
+                            {sprint.status}
+                          </span>
+                        </div>
+
+                        <p className="min-h-10 text-sm leading-6 text-slate-500">{sprint.goal || "هدف ثبت نشده"}</p>
+
+                        <div className="mt-4">
+                          <div className="mb-1 flex justify-between text-xs">
+                            <span>{done}/{count} Done</span>
+                            <span>{progress}%</span>
+                          </div>
+                          <div className="h-2 rounded-full bg-slate-100">
+                            <div className="h-2 rounded-full bg-indigo-600" style={{ width: `${progress}%` }} />
+                          </div>
+                        </div>
+
+                        <div className="mt-4 flex gap-2">
+                          <button
+                            onClick={() => {
+                              setActiveSprintId(sprint.id);
+                              setActiveView("board");
+                            }}
+                            className="flex-1 rounded-2xl bg-slate-900 px-3 py-2 text-xs font-bold text-white"
+                          >
+                            باز کردن بورد
+                          </button>
+
+                          <button
+                            onClick={() => openEditSprintModal(sprint)}
+                            className="rounded-2xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600"
+                          >
+                            ویرایش
+                          </button>
+
+                          <button
+                            onClick={() => deleteSprint(sprint.id)}
+                            className="rounded-2xl border border-red-100 px-3 py-2 text-xs font-bold text-red-500"
+                          >
+                            حذف
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {projectSprints.length === 0 && (
+                    <div className="rounded-3xl border border-dashed border-indigo-200 bg-white p-6 text-center text-sm text-slate-400">
+                      هنوز اسپرینتی ساخته نشده است.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {backlogTasks.map((task) => {
+                  const assignee = users.find((user) => user.id === task.assigneeId);
+                  const deadlineDays = daysUntil(task.deadline);
+
+                  return (
+                    <div
+                      key={task.id}
+                      onClick={() => openTask(task)}
+                      className="cursor-pointer rounded-3xl border border-slate-200 bg-white p-4 shadow-md transition hover:-translate-y-1 hover:border-blue-300 hover:shadow-xl"
+                    >
+                      <div className="mb-3 flex items-center justify-between">
+                        <span className="text-xs font-black text-blue-600">{task.code}</span>
+                        <span className={`rounded-full border px-2 py-1 text-[11px] font-bold ${priorityStyle[task.priority]}`}>
+                          {task.priority}
+                        </span>
+                      </div>
+
+                      <h3 className="font-bold leading-7">{task.title}</h3>
+
+                      {task.description && (
+                        <p className="mt-2 line-clamp-2 text-sm leading-6 text-slate-500">{task.description}</p>
+                      )}
+
+                      <div className="mt-3 text-xs text-slate-400">
+                        مسئول: {assignee?.name || "بدون مسئول"} · ددلاین: {task.deadline ? deadlineDays !== null && deadlineDays < 0 ? `${Math.abs(deadlineDays)} روز عقب` : task.deadline : "ندارد"}
+                      </div>
+
+                      <div className="mt-4 flex gap-2 border-t border-slate-100 pt-3">
+                        <select
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => {
+                            const value = Number(e.target.value);
+                            if (value) moveTaskToSprint(task, value);
+                          }}
+                          className="flex-1 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs outline-none"
+                          defaultValue=""
+                        >
+                          <option value="">انتقال به اسپرینت...</option>
+                          {projectSprints.map((sprint) => (
+                            <option key={sprint.id} value={sprint.id}>
+                              {sprint.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {backlogTasks.length === 0 && (
+                  <div className="rounded-3xl border border-dashed border-slate-200 bg-white p-6 text-center text-slate-400">
+                    بک‌لاگ خالی است.
+                  </div>
+                )}
+              </div>
+            </section>
           )}
 
           {activeView === "myTasks" && (
@@ -1973,55 +2758,231 @@ export default function Home() {
 
           {activeView === "reports" && (
             <section className="rounded-3xl border border-white/70 bg-white/80 p-6 shadow-xl shadow-slate-200/60 backdrop-blur">
-              <div className="mb-6">
-                <h2 className="text-2xl font-black">گزارش‌ها</h2>
-                <p className="mt-1 text-sm text-slate-500">خلاصه وضعیت پروژه، ددلاین‌ها و عملکرد تیم.</p>
+              <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-2xl font-black">گزارش‌ها</h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    خروجی بر اساس تاریخ، اسپرینت، کاربر و پروژه.
+                  </p>
+                </div>
+
+                <button
+                  onClick={exportReportCsv}
+                  className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-bold text-white hover:bg-black"
+                >
+                  خروجی CSV
+                </button>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-4">
+              <div className="mb-6 grid gap-3 md:grid-cols-5">
+                <input
+                  type="date"
+                  value={reportFromDate}
+                  onChange={(e) => setReportFromDate(e.target.value)}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                />
+
+                <input
+                  type="date"
+                  value={reportToDate}
+                  onChange={(e) => setReportToDate(e.target.value)}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                />
+
+                <select
+                  value={reportProjectId}
+                  onChange={(e) => setReportProjectId(e.target.value)}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                >
+                  <option value="all">همه پروژه‌ها</option>
+                  {projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  value={reportSprintId}
+                  onChange={(e) => setReportSprintId(e.target.value)}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                >
+                  <option value="all">همه اسپرینت‌ها</option>
+                  <option value="backlog">بک‌لاگ</option>
+                  {sprints.map((sprint) => (
+                    <option key={sprint.id} value={sprint.id}>
+                      {sprint.name}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  value={reportUserId}
+                  onChange={(e) => setReportUserId(e.target.value)}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                >
+                  <option value="all">همه کاربران</option>
+                  {users.map((user) => (
+                    <option key={user.id} value={user.id}>
+                      {user.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-5">
                 <div className="rounded-3xl border border-slate-200 bg-white p-5">
                   <p className="text-sm text-slate-400">کل تسک‌ها</p>
-                  <p className="mt-2 text-3xl font-black">{pulse.total}</p>
+                  <p className="mt-2 text-3xl font-black">{reportTasks.length}</p>
                 </div>
 
                 <div className="rounded-3xl border border-slate-200 bg-white p-5">
                   <p className="text-sm text-slate-400">تکمیل‌شده</p>
-                  <p className="mt-2 text-3xl font-black text-blue-700">{pulse.done}</p>
+                  <p className="mt-2 text-3xl font-black text-blue-700">{reportDone}</p>
                 </div>
 
-                <div className="rounded-3xl border border-amber-200 bg-amber-50 p-5">
-                  <p className="text-sm text-amber-600">ددلاین نزدیک</p>
-                  <p className="mt-2 text-3xl font-black text-amber-700">{pulse.dueSoon}</p>
+                <div className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5">
+                  <p className="text-sm text-emerald-600">پیشرفت</p>
+                  <p className="mt-2 text-3xl font-black text-emerald-700">{reportProgress}%</p>
                 </div>
 
                 <div className="rounded-3xl border border-red-200 bg-red-50 p-5">
                   <p className="text-sm text-red-600">عقب‌افتاده</p>
-                  <p className="mt-2 text-3xl font-black text-red-700">{pulse.overdue}</p>
+                  <p className="mt-2 text-3xl font-black text-red-700">{reportOverdue}</p>
+                </div>
+
+                <div className="rounded-3xl border border-purple-200 bg-purple-50 p-5">
+                  <p className="text-sm text-purple-600">ایمپورت‌شده</p>
+                  <p className="mt-2 text-3xl font-black text-purple-700">
+                    {reportTasks.filter((task) => task.source === "import").length}
+                  </p>
                 </div>
               </div>
 
-              <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-5">
-                <h3 className="mb-4 text-lg font-black">گزارش حجم کاری</h3>
-
-                <div className="space-y-4">
-                  {workloadByUser
-                    .filter((item) => item.user.role === "developer")
-                    .map((item) => {
-                      const percent = Math.min(100, Math.round((item.load / item.capacity) * 100));
+              <div className="mt-6 overflow-x-auto rounded-3xl border border-slate-200 bg-white">
+                <table className="w-full min-w-[900px] text-right text-sm">
+                  <thead className="bg-slate-50 text-xs text-slate-500">
+                    <tr>
+                      <th className="p-4">کد</th>
+                      <th className="p-4">عنوان</th>
+                      <th className="p-4">پروژه</th>
+                      <th className="p-4">اسپرینت</th>
+                      <th className="p-4">کاربر</th>
+                      <th className="p-4">وضعیت</th>
+                      <th className="p-4">اولویت</th>
+                      <th className="p-4">ددلاین</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reportTasks.map((task) => {
+                      const project = projects.find((item) => item.id === task.projectId);
+                      const sprint = sprints.find((item) => item.id === task.sprintId);
+                      const assignee = users.find((item) => item.id === task.assigneeId);
 
                       return (
-                        <div key={item.user.id}>
-                          <div className="mb-1 flex items-center justify-between text-sm">
-                            <span className="font-bold">{item.user.name}</span>
-                            <span className="text-slate-400">{item.load}/{item.capacity}</span>
-                          </div>
-
-                          <div className="h-3 rounded-full bg-slate-100">
-                            <div className="h-3 rounded-full bg-slate-900" style={{ width: `${percent}%` }} />
-                          </div>
-                        </div>
+                        <tr key={task.id} className="border-t border-slate-100">
+                          <td className="p-4 font-bold text-blue-600">{task.code}</td>
+                          <td className="p-4">{task.title}</td>
+                          <td className="p-4">{project?.name || "-"}</td>
+                          <td className="p-4">{sprint?.name || "Backlog"}</td>
+                          <td className="p-4">{assignee?.name || "بدون مسئول"}</td>
+                          <td className="p-4">{task.status}</td>
+                          <td className="p-4">{task.priority}</td>
+                          <td className="p-4">{task.deadline || "-"}</td>
+                        </tr>
                       );
                     })}
+
+                    {reportTasks.length === 0 && (
+                      <tr>
+                        <td colSpan={8} className="p-8 text-center text-slate-400">
+                          گزارشی با این فیلترها پیدا نشد.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
+          {activeView === "imports" && (
+            <section className="rounded-3xl border border-white/70 bg-white/80 p-6 shadow-xl shadow-slate-200/60 backdrop-blur">
+              <div className="mb-6">
+                <h2 className="text-2xl font-black">ایمپورت فایل</h2>
+                <p className="mt-1 text-sm leading-7 text-slate-500">
+                  فایل CSV یا JSON خروجی Jira را انتخاب کن. تسک‌ها بر اساس پروژه و اسپرینت ساخته یا به موارد موجود وصل می‌شوند.
+                </p>
+              </div>
+
+              <div className="mb-6 rounded-3xl border border-dashed border-blue-200 bg-blue-50 p-6">
+                <input
+                  type="file"
+                  accept=".csv,.json"
+                  onChange={(e) => parseImportFile(e.target.files)}
+                  className="w-full rounded-2xl border border-blue-100 bg-white px-4 py-3"
+                />
+
+                <p className="mt-3 text-xs leading-6 text-blue-700">
+                  ستون‌های قابل شناسایی: Summary/Title، Description، Project Key، Project Name، Sprint، Status، Assignee، Priority، Due Date، Labels، Issue Type، Story Points.
+                </p>
+              </div>
+
+              {importPreview.length > 0 && (
+                <>
+                  <div className="mb-4 flex items-center justify-between">
+                    <p className="font-bold">{importPreview.length} تسک آماده ایمپورت است.</p>
+
+                    <button
+                      onClick={importTasks}
+                      className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-700"
+                    >
+                      تایید و ایمپورت
+                    </button>
+                  </div>
+
+                  <div className="max-h-[460px] overflow-auto rounded-3xl border border-slate-200 bg-white">
+                    <table className="w-full min-w-[900px] text-right text-sm">
+                      <thead className="bg-slate-50 text-xs text-slate-500">
+                        <tr>
+                          <th className="p-4">عنوان</th>
+                          <th className="p-4">پروژه</th>
+                          <th className="p-4">اسپرینت</th>
+                          <th className="p-4">وضعیت</th>
+                          <th className="p-4">مسئول</th>
+                          <th className="p-4">اولویت</th>
+                          <th className="p-4">ددلاین</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {importPreview.slice(0, 100).map((row, index) => (
+                          <tr key={`${row.title}-${index}`} className="border-t border-slate-100">
+                            <td className="p-4 font-bold">{row.title}</td>
+                            <td className="p-4">{row.projectName} ({row.projectKey})</td>
+                            <td className="p-4">{row.sprintName || "Backlog"}</td>
+                            <td className="p-4">{row.status}</td>
+                            <td className="p-4">{row.assigneeName || row.assigneeEmail || "-"}</td>
+                            <td className="p-4">{row.priority}</td>
+                            <td className="p-4">{row.deadline || "-"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+
+              <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-5">
+                <h3 className="mb-3 font-black">لاگ ایمپورت</h3>
+
+                <div className="max-h-52 space-y-2 overflow-y-auto text-sm text-slate-600">
+                  {importLog.length === 0 && <p className="text-slate-400">هنوز ایمپورتی انجام نشده.</p>}
+
+                  {importLog.map((log, index) => (
+                    <div key={index} className="rounded-2xl bg-slate-50 p-3">
+                      {log}
+                    </div>
+                  ))}
                 </div>
               </div>
             </section>
@@ -2158,6 +3119,73 @@ export default function Home() {
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {isSprintModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-2xl rounded-3xl bg-white p-6 shadow-2xl">
+            <h2 className="mb-5 text-xl font-black">
+              {editingSprintId ? "ویرایش اسپرینت" : "ایجاد اسپرینت"}
+            </h2>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <input
+                value={sprintName}
+                onChange={(e) => setSprintName(e.target.value)}
+                placeholder="نام اسپرینت"
+                className="rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-indigo-500 md:col-span-2"
+              />
+
+              <input
+                type="date"
+                value={sprintStartDate}
+                onChange={(e) => setSprintStartDate(e.target.value)}
+                className="rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-indigo-500"
+              />
+
+              <input
+                type="date"
+                value={sprintEndDate}
+                onChange={(e) => setSprintEndDate(e.target.value)}
+                className="rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-indigo-500"
+              />
+
+              <select
+                value={sprintStatus}
+                onChange={(e) => setSprintStatus(e.target.value as SprintStatus)}
+                className="rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-indigo-500 md:col-span-2"
+              >
+                <option value="planned">planned</option>
+                <option value="active">active</option>
+                <option value="closed">closed</option>
+              </select>
+
+              <textarea
+                value={sprintGoal}
+                onChange={(e) => setSprintGoal(e.target.value)}
+                placeholder="هدف اسپرینت"
+                rows={4}
+                className="rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-indigo-500 md:col-span-2"
+              />
+            </div>
+
+            <div className="mt-5 flex gap-3">
+              <button
+                onClick={saveSprint}
+                className="rounded-2xl bg-indigo-600 px-5 py-3 font-medium text-white"
+              >
+                ذخیره
+              </button>
+
+              <button
+                onClick={closeSprintModal}
+                className="rounded-2xl bg-slate-100 px-5 py-3"
+              >
+                انصراف
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2455,6 +3483,41 @@ export default function Home() {
                   <option value="urgent">Urgent</option>
                 </select>
               </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium">اسپرینت</label>
+                <select
+                  value={taskSprintId || ""}
+                  disabled={!taskModalCanEdit}
+                  onChange={(e) => setTaskSprintId(e.target.value ? Number(e.target.value) : null)}
+                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 disabled:bg-slate-100 disabled:text-slate-400"
+                >
+                  <option value="">بک‌لاگ / بدون اسپرینت</option>
+                  {projectSprints.map((sprint) => (
+                    <option key={sprint.id} value={sprint.id}>
+                      {sprint.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {!selectedTask && (
+                <div>
+                  <label className="mb-2 block text-sm font-medium">ستون شروع</label>
+                  <select
+                    value={taskDefaultStatus || columns[0]?.key || "todo"}
+                    disabled={!taskModalCanEdit}
+                    onChange={(e) => setTaskDefaultStatus(e.target.value)}
+                    className="w-full rounded-2xl border border-slate-200 px-4 py-3 disabled:bg-slate-100 disabled:text-slate-400"
+                  >
+                    {columns.map((column) => (
+                      <option key={column.key} value={column.key}>
+                        {column.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
 
             {selectedTask?.autoAssigned && selectedTask.assignmentReason && (
