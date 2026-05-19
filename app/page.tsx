@@ -2279,7 +2279,6 @@ export default function Home() {
                           className="flex w-full items-center justify-between rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 transition hover:bg-blue-50 hover:text-blue-700"
                         >
                           <span>تسک‌های من</span>
-                          <span className="rounded-xl bg-blue-50 px-2 py-1 text-blue-700">→</span>
                         </button>
 
                         <button
