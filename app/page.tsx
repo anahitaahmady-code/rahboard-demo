@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { auth, db } from "./firebase";
+import OKRPerformancePage from "./OKRPerformancePage";
 import {
   collection,
   deleteDoc,
@@ -45,7 +46,7 @@ type ErrorType =
   | "unknown";
 type Estimate = "small" | "medium" | "large";
 type ShiftNeed = "morning" | "evening" | "night" | "any";
-type ActiveView = "board" | "backlog" | "myTasks" | "reports" | "imports" | "teamSettings";
+type ActiveView = "board" | "backlog" | "myTasks" | "reports" | "imports" | "teamSettings" | "okr";
 type SprintStatus = "planned" | "active" | "closed";
 type ThemeMode = "light" | "dark";
 
@@ -2117,6 +2118,17 @@ export default function Home() {
             </button>
 
             <button
+              onClick={() => setActiveView("okr")}
+              className={`w-full rounded-2xl px-4 py-3 text-right font-semibold ${
+                activeView === "okr"
+                  ? "bg-blue-50 text-blue-700"
+                  : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              OKR و عملکرد
+            </button>
+
+            <button
               onClick={() => setActiveView("reports")}
               className={`w-full rounded-2xl px-4 py-3 text-right font-semibold ${
                 activeView === "reports"
@@ -2267,7 +2279,7 @@ export default function Home() {
                           className="flex w-full items-center justify-between rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 transition hover:bg-blue-50 hover:text-blue-700"
                         >
                           <span>تسک‌های من</span>
-                          
+                          <span className="rounded-xl bg-blue-50 px-2 py-1 text-blue-700">→</span>
                         </button>
 
                         <button
@@ -3154,6 +3166,14 @@ export default function Home() {
             </section>
           )}
 
+          {activeView === "okr" && (
+            <OKRPerformancePage
+              users={users}
+              projects={projects}
+              currentUser={currentUser}
+            />
+          )}
+
           {activeView === "imports" && (
             <section className="rounded-3xl border border-white/70 bg-white/80 p-6 shadow-xl shadow-slate-200/60 backdrop-blur">
               <div className="mb-6">
@@ -3329,54 +3349,83 @@ export default function Home() {
               </button>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2">
               <div>
-                <label className="mb-2 block text-sm font-medium">تاریخ</label>
-                <input
-                  type="date"
-                  value={workDate}
-                  onChange={(e) => setWorkDate(e.target.value)}
-                  className="w-full rounded-2xl border border-slate-200 px-4 py-3"
-                />
-              </div>
-
-              <label className="flex items-center gap-3 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold">
-                <input
-                  type="checkbox"
-                  checked={workIsOff}
-                  onChange={(e) => setWorkIsOff(e.target.checked)}
-                />
-                آف / مرخصی هستم
-              </label>
-
-              <div>
-                <label className="mb-2 block text-sm font-medium">شروع کار</label>
-                <input
-                  type="time"
-                  value={workStartTime}
-                  disabled={workIsOff}
-                  onChange={(e) => setWorkStartTime(e.target.value)}
-                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 disabled:bg-slate-100"
-                />
+                <label className="mb-2 block text-sm font-bold text-slate-700">
+                  تاریخ
+                </label>
+                <div className="relative">
+                  <input
+                    type="date"
+                    value={workDate}
+                    onChange={(e) => setWorkDate(e.target.value)}
+                    className="h-14 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 pr-11 text-right outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                  />
+                  <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400">
+                    📅
+                  </span>
+                </div>
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-medium">پایان کار</label>
-                <input
-                  type="time"
-                  value={workEndTime}
-                  disabled={workIsOff}
-                  onChange={(e) => setWorkEndTime(e.target.value)}
-                  className="w-full rounded-2xl border border-slate-200 px-4 py-3 disabled:bg-slate-100"
-                />
+                <label className="mb-2 block text-sm font-bold text-slate-700">
+                  وضعیت حضور
+                </label>
+                <label className="flex h-14 w-full cursor-pointer items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 transition hover:border-blue-300 hover:bg-blue-50/40">
+                  <span className="text-sm font-bold text-slate-700">
+                    آف / مرخصی هستم
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={workIsOff}
+                    onChange={(e) => setWorkIsOff(e.target.checked)}
+                    className="h-4 w-4 cursor-pointer accent-slate-900"
+                  />
+                </label>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-bold text-slate-700">
+                  شروع کار
+                </label>
+                <div className="relative">
+                  <input
+                    type="time"
+                    value={workStartTime}
+                    disabled={workIsOff}
+                    onChange={(e) => setWorkStartTime(e.target.value)}
+                    className="h-14 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 pr-11 text-right outline-none transition disabled:bg-slate-50 disabled:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                  />
+                  <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400">
+                    🕘
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-bold text-slate-700">
+                  پایان کار
+                </label>
+                <div className="relative">
+                  <input
+                    type="time"
+                    value={workEndTime}
+                    disabled={workIsOff}
+                    onChange={(e) => setWorkEndTime(e.target.value)}
+                    className="h-14 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 pr-11 text-right outline-none transition disabled:bg-slate-50 disabled:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                  />
+                  <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400">
+                    🕔
+                  </span>
+                </div>
               </div>
             </div>
 
             <textarea
               value={workNote}
               onChange={(e) => setWorkNote(e.target.value)}
-              placeholder="توضیح اختیاری؛ مثلا مرخصی ساعتی، جلسه خارج از شرکت..."
-              className="mt-4 min-h-28 w-full rounded-2xl border border-slate-200 px-4 py-3"
+              placeholder="توضیح اختیاری؛ مثلاً مرخصی ساعتی، جلسه خارج از شرکت..."
+              className="mt-4 min-h-28 w-full resize-none rounded-2xl border border-slate-200 bg-white px-4 py-3 text-right leading-7 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
             />
 
             <div className="mt-5 rounded-2xl bg-slate-50 p-4">
@@ -3398,12 +3447,14 @@ export default function Home() {
               </div>
             </div>
 
-            <button
-              onClick={saveWorkSchedule}
-              className="mt-6 rounded-2xl bg-slate-900 px-6 py-3 font-bold text-white hover:bg-black"
-            >
-              ذخیره ساعت کاری
-            </button>
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={saveWorkSchedule}
+                className="rounded-2xl bg-slate-900 px-8 py-4 text-sm font-black text-white shadow-lg shadow-slate-300 transition hover:-translate-y-0.5 hover:bg-slate-800"
+              >
+                ذخیره ساعت کاری
+              </button>
+            </div>
           </div>
         </div>
       )}
