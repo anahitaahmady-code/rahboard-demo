@@ -28,6 +28,14 @@ const verifySecret = (request: Request) => {
   return request.headers.get("x-telegram-bot-api-secret-token") === expected;
 };
 
+export async function GET() {
+  return Response.json({
+    ok: true,
+    route: "telegram webhook",
+    message: "Use Telegram setWebhook to send POST updates to this URL.",
+  });
+}
+
 export async function POST(request: Request) {
   if (!verifySecret(request)) {
     return Response.json({ ok: false, error: "Invalid Telegram secret." }, { status: 401 });
