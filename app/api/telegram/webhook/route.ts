@@ -71,18 +71,26 @@ export async function POST(request: Request) {
           })
         : null;
 
-      await sendTelegramMessage(
-        chatId,
-        delivery?.sent
-          ? "گزارش اسپرینت ایمیل شد."
-          : "گزارش ساخته شد، ولی ایمیل مقصد یا سرویس ارسال تنظیم نشده است."
-      );
+      try {
+        await sendTelegramMessage(
+          chatId,
+          delivery?.sent
+            ? "گزارش اسپرینت ایمیل شد."
+            : "گزارش ساخته شد، ولی ایمیل مقصد یا سرویس ارسال تنظیم نشده است."
+        );
+      } catch (error) {
+        console.error("Telegram report reply error:", error);
+      }
 
       return Response.json({ ok: true, command: "sprint_report", delivery });
     }
 
     const task = await createTaskFromTelegramText(text);
-    await sendTelegramMessage(chatId, `تسک ساخته شد: ${task.code}\n${task.title}`);
+    try {
+      await sendTelegramMessage(chatId, `تسک ساخته شد: ${task.code}\n${task.title}`);
+    } catch (error) {
+      console.error("Telegram task reply error:", error);
+    }
 
     return Response.json({ ok: true, task });
   } catch (error) {

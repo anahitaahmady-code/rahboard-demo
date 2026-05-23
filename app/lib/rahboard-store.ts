@@ -41,17 +41,19 @@ export async function createTaskFromTelegramText(text: string) {
   const project =
     data.projects.find(
       (item) => String(item.id) === process.env.TELEGRAM_DEFAULT_PROJECT_ID
-    ) || data.projects[0];
+    ) ||
+    data.projects[0] ||
+    {
+      id: 1,
+      name: "Telegram Inbox",
+      key: "RB",
+    };
   const activeSprint =
     data.sprints.find(
       (item) =>
         String(item.id) === process.env.TELEGRAM_DEFAULT_SPRINT_ID ||
         (project && item.projectId === project.id && item.status === "active")
     ) || null;
-
-  if (!project) {
-    throw new Error("No project found for Telegram task creation.");
-  }
 
   const now = Date.now();
   const code = `${project.key || "RB"}-${now}`;
