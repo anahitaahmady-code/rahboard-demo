@@ -1,10 +1,8 @@
 import {
   collection,
-  doc,
   getDocs,
   orderBy,
   query,
-  setDoc,
 } from "firebase/firestore";
 import { serverDb } from "./firebase-server";
 import {
@@ -15,6 +13,59 @@ import {
   type BasicUser,
   type TeamActivityLog,
 } from "./reporting";
+
+const firebaseApiKey = "AIzaSyDCVi_LPNfalO1vdyTC3jFg7tREm_txfgU";
+const firebaseProjectId = "rahboard-7750b";
+
+const toFirestoreValue = (value: unknown): Record<string, unknown> => {
+  if (value === null || value === undefined) return { nullValue: null };
+  if (typeof value === "string") return { stringValue: value };
+  if (typeof value === "boolean") return { booleanValue: value };
+  if (typeof value === "number") {
+    return Number.isInteger(value)
+      ? { integerValue: String(value) }
+      : { doubleValue: value };
+  }
+  if (Array.isArray(value)) {
+    return {
+      arrayValue: {
+        values: value.map((item) => toFirestoreValue(item)),
+      },
+    };
+  }
+  if (typeof value === "object") {
+    return {
+      mapValue: {
+        fields: toFirestoreFields(value as Record<string, unknown>),
+      },
+    };
+  }
+
+  return { stringValue: String(value) };
+};
+
+const toFirestoreFields = (data: Record<string, unknown>) =>
+  Object.fromEntries(
+    Object.entries(data)
+      .filter(([, value]) => value !== undefined)
+      .map(([key, value]) => [key, toFirestoreValue(value)])
+  );
+
+const saveTaskWithRestApi = async (task: Record<string, unknown>) => {
+  const response = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${firebaseProjectId}/databases/(default)/documents/tasks/${task.id}?key=${firebaseApiKey}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fields: toFirestoreFields(task) }),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Firestore REST write failed with ${response.status}: ${errorText}`);
+  }
+};
 
 export async function loadRahboardData() {
   const [usersSnapshot, projectsSnapshot, sprintsSnapshot, tasksSnapshot, logsSnapshot] =
@@ -36,31 +87,19 @@ export async function loadRahboardData() {
 }
 
 export async function createTaskFromTelegramText(text: string) {
-  const data = await loadRahboardData();
   const parsed = parseTelegramTaskText(text);
-  const project =
-    data.projects.find(
-      (item) => String(item.id) === process.env.TELEGRAM_DEFAULT_PROJECT_ID
-    ) ||
-    data.projects[0] ||
-    {
-      id: 1,
-      name: "Telegram Inbox",
-      key: "RB",
-    };
-  const activeSprint =
-    data.sprints.find(
-      (item) =>
-        String(item.id) === process.env.TELEGRAM_DEFAULT_SPRINT_ID ||
-        (project && item.projectId === project.id && item.status === "active")
-    ) || null;
+  const projectId = Number(process.env.TELEGRAM_DEFAULT_PROJECT_ID || 1);
+  const projectKey = process.env.TELEGRAM_DEFAULT_PROJECT_KEY || "RB";
+  const sprintId = process.env.TELEGRAM_DEFAULT_SPRINT_ID
+    ? Number(process.env.TELEGRAM_DEFAULT_SPRINT_ID)
+    : null;
 
   const now = Date.now();
-  const code = `${project.key || "RB"}-${now}`;
+  const code = `${projectKey}-${now}`;
   const task = {
     id: now,
-    projectId: project.id,
-    sprintId: activeSprint?.id || null,
+    projectId,
+    sprintId,
     code,
     title: parsed.title,
     status: process.env.TELEGRAM_DEFAULT_STATUS || "todo",
@@ -85,6 +124,6 @@ export async function createTaskFromTelegramText(text: string) {
     deadlineHistory: [],
   };
 
-  await setDoc(doc(serverDb, "tasks", String(task.id)), task);
+  await saveTaskWithRestApi(task);
   return task;
 }

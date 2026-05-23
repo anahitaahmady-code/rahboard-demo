@@ -149,15 +149,19 @@ export async function sendTelegramMessage(chatId: number | string, text: string)
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) return;
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2500);
+
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: controller.signal,
     body: JSON.stringify({
       chat_id: chatId,
       text,
       parse_mode: "Markdown",
     }),
-  });
+  }).finally(() => clearTimeout(timeout));
 
   if (!response.ok) {
     throw new Error(`Telegram sendMessage failed with ${response.status}`);
