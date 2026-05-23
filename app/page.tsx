@@ -4,6 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 import { auth, db } from "./firebase";
 import OKRPerformancePage from "./OKRPerformancePage";
 import {
+  buildSprintReport,
+  formatSprintReportMarkdown,
+  type DeadlineChange,
+  type TeamActivityLog,
+  type WorkLog,
+} from "./lib/reporting";
+import {
   collection,
   deleteDoc,
   doc,
@@ -46,7 +53,15 @@ type ErrorType =
   | "unknown";
 type Estimate = "small" | "medium" | "large";
 type ShiftNeed = "morning" | "evening" | "night" | "any";
-type ActiveView = "board" | "backlog" | "myTasks" | "reports" | "imports" | "teamSettings" | "okr";
+type ActiveView =
+  | "board"
+  | "backlog"
+  | "myTasks"
+  | "reports"
+  | "imports"
+  | "teamSettings"
+  | "okr"
+  | "automation";
 type SprintStatus = "planned" | "active" | "closed";
 type ThemeMode = "light" | "dark";
 
@@ -110,10 +125,13 @@ type Task = {
   errorType?: ErrorType;
   estimate?: Estimate;
   estimatedHours?: number;
+  completedAt?: string;
+  deadlineHistory?: DeadlineChange[];
+  workLogs?: WorkLog[];
   shiftNeed?: ShiftNeed;
   autoAssigned?: boolean;
   assignmentReason?: string;
-  source?: "manual" | "import";
+  source?: "manual" | "import" | "telegram";
   importedAt?: number;
 };
 
@@ -382,12 +400,29 @@ export default function Home() {
 
   const currentUser = appUser || users.find((user) => user.id === currentUserId) || users[0];
   const permissions = rolePermissions[currentUser.role];
+  const getUserName = (userId: number | null | undefined) =>
+    users.find((user) => user.id === userId)?.name || "بدون مسئول";
   const [activeView, setActiveView] = useState<ActiveView>("board");
   const [isBoardMenuOpen, setIsBoardMenuOpen] = useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
-  const [themeMode, setThemeMode] = useState<ThemeMode>("light");
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+    if (typeof window === "undefined") return "light";
+    return (window.localStorage.getItem("rahboard-theme") as ThemeMode | null) || "light";
+  });
   const [isWorkScheduleModalOpen, setIsWorkScheduleModalOpen] = useState(false);
-  const [workSchedules, setWorkSchedules] = useState<WorkSchedule[]>([]);
+  const [workSchedules, setWorkSchedules] = useState<WorkSchedule[]>(() => {
+    if (typeof window === "undefined") return [];
+
+    const saved = window.localStorage.getItem("rahboard-work-schedules");
+    if (!saved) return [];
+
+    try {
+      return JSON.parse(saved) as WorkSchedule[];
+    } catch (error) {
+      console.error("Work schedule load error:", error);
+      return [];
+    }
+  });
   const [workDate, setWorkDate] = useState("");
   const [workIsOff, setWorkIsOff] = useState(false);
   const [workStartTime, setWorkStartTime] = useState("09:00");
@@ -467,6 +502,18 @@ export default function Home() {
   const [reportSprintId, setReportSprintId] = useState("all");
   const [reportUserId, setReportUserId] = useState("all");
   const [reportProjectId, setReportProjectId] = useState("all");
+  const [automationSprintId, setAutomationSprintId] = useState("");
+  const [automationEmail, setAutomationEmail] = useState("");
+  const [automationStatus, setAutomationStatus] = useState("");
+  const [reportGeneratedAt] = useState(() => new Date());
+  const [teamActivityLogs, setTeamActivityLogs] = useState<TeamActivityLog[]>([]);
+  const [activityCategory, setActivityCategory] =
+    useState<TeamActivityLog["category"]>("focus");
+  const [activityMinutes, setActivityMinutes] = useState(60);
+  const [activityTaskId, setActivityTaskId] = useState("");
+  const [activityNote, setActivityNote] = useState("");
+  const [workLogHours, setWorkLogHours] = useState(1);
+  const [workLogNote, setWorkLogNote] = useState("");
 
   const [importPreview, setImportPreview] = useState<ImportPreviewRow[]>([]);
   const [importLog, setImportLog] = useState<string[]>([]);
@@ -495,31 +542,9 @@ export default function Home() {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const savedTheme = window.localStorage.getItem("rahboard-theme") as ThemeMode | null;
-    const nextTheme = savedTheme || "light";
-    setThemeMode(nextTheme);
-    document.documentElement.classList.toggle("dark", nextTheme === "dark");
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
     document.documentElement.classList.toggle("dark", themeMode === "dark");
     window.localStorage.setItem("rahboard-theme", themeMode);
   }, [themeMode]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const saved = window.localStorage.getItem("rahboard-work-schedules");
-    if (!saved) return;
-
-    try {
-      setWorkSchedules(JSON.parse(saved));
-    } catch (error) {
-      console.error("Work schedule load error:", error);
-    }
-  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -528,7 +553,8 @@ export default function Home() {
 
   useEffect(() => {
     if (appUser) {
-      setCurrentUserId(appUser.id);
+      const timeout = window.setTimeout(() => setCurrentUserId(appUser.id), 0);
+      return () => window.clearTimeout(timeout);
     }
   }, [appUser]);
 
@@ -715,7 +741,12 @@ export default function Home() {
 
     if (activeSprintId && projectSprints.some((sprint) => sprint.id === activeSprintId)) return;
 
-    setActiveSprintId(active?.id || first?.id || null);
+    const timeout = window.setTimeout(
+      () => setActiveSprintId(active?.id || first?.id || null),
+      0
+    );
+
+    return () => window.clearTimeout(timeout);
   }, [projectSprints, activeSprintId]);
 
   useEffect(() => {
@@ -728,9 +759,32 @@ export default function Home() {
           ...data,
           sprintId: data.sprintId ?? null,
           source: data.source || "manual",
+          deadlineHistory: data.deadlineHistory || [],
+          workLogs: data.workLogs || [],
         };
       });
       setTasks(firebaseTasks);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const q = query(collection(db, "activityLogs"), orderBy("createdAt", "desc"));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const firebaseLogs = snapshot.docs.map((docItem) => {
+        const data = docItem.data() as TeamActivityLog;
+        return {
+          ...data,
+          id: Number(data.id || docItem.id),
+          minutes: Number(data.minutes || 0),
+          category: data.category || "other",
+          source: data.source || "manual",
+        };
+      });
+
+      setTeamActivityLogs(firebaseLogs);
     });
 
     return () => unsubscribe();
@@ -1124,6 +1178,8 @@ export default function Home() {
     setTaskSprintId(defaultSprintId === undefined ? activeSprintId : defaultSprintId);
     setTaskDefaultStatus(defaultStatus || columns[0]?.key || "todo");
     setCommentText("");
+    setWorkLogHours(1);
+    setWorkLogNote("");
     setIsTaskModalOpen(true);
   };
 
@@ -1143,6 +1199,8 @@ export default function Home() {
     setTaskSprintId(task.sprintId ?? null);
     setTaskDefaultStatus(task.status);
     setCommentText("");
+    setWorkLogHours(1);
+    setWorkLogNote("");
     setIsTaskModalOpen(true);
   };
 
@@ -1189,6 +1247,23 @@ export default function Home() {
 
         if (!currentTask) return;
 
+        const deadlineHistory =
+          currentTask.deadline !== deadline
+            ? [
+                ...(currentTask.deadlineHistory || []),
+                {
+                  id: Date.now(),
+                  taskId: currentTask.id,
+                  previousDeadline: currentTask.deadline || "",
+                  nextDeadline: deadline || "",
+                  changedBy: currentUser.id,
+                  changedByName: currentUser.name,
+                  changedAt: new Date().toISOString(),
+                  sprintId: taskSprintId,
+                },
+              ]
+            : currentTask.deadlineHistory || [];
+
         const updatedTask: Task = {
           ...currentTask,
           title,
@@ -1203,6 +1278,7 @@ export default function Home() {
           estimatedHours: taskEstimatedHours,
           shiftNeed,
           sprintId: taskSprintId,
+          deadlineHistory,
         };
 
         await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
@@ -1236,6 +1312,8 @@ export default function Home() {
           autoAssigned,
           assignmentReason,
           source: "manual",
+          deadlineHistory: [],
+          workLogs: [],
         };
 
         await setDoc(doc(db, "tasks", String(newTask.id)), newTask);
@@ -1304,6 +1382,112 @@ export default function Home() {
     });
 
     setCommentText("");
+  };
+
+  const canLogWork = (task: Task) => {
+    return canEditTask(task) || task.assigneeId === currentUser.id;
+  };
+
+  const addWorkLogToTask = async () => {
+    if (!selectedTask) return;
+
+    const currentTask = tasks.find((task) => task.id === selectedTask.id);
+    if (!currentTask) return;
+
+    if (!canLogWork(currentTask)) {
+      showNoAccess();
+      return;
+    }
+
+    const minutes = Math.round(Number(workLogHours || 0) * 60);
+    if (minutes <= 0) return;
+
+    const workLog: WorkLog = {
+      id: Date.now(),
+      taskId: currentTask.id,
+      userId: currentUser.id,
+      userName: currentUser.name,
+      minutes,
+      note: workLogNote.trim(),
+      loggedAt: new Date().toISOString(),
+      createdAt: Date.now(),
+    };
+
+    await setDoc(doc(db, "tasks", String(currentTask.id)), {
+      ...currentTask,
+      workLogs: [workLog, ...(currentTask.workLogs || [])],
+    });
+
+    setWorkLogHours(1);
+    setWorkLogNote("");
+    notify("ساعت کار روی تسک ثبت شد");
+  };
+
+  const saveActivityEntry = async () => {
+    const minutes = Math.round(Number(activityMinutes || 0));
+    if (minutes <= 0) return;
+
+    const task = activityTaskId
+      ? tasks.find((item) => item.id === Number(activityTaskId))
+      : null;
+    const log: TeamActivityLog = {
+      id: Date.now(),
+      userId: currentUser.id,
+      userName: currentUser.name,
+      taskId: task?.id || null,
+      taskCode: task?.code || "",
+      taskTitle: task?.title || "",
+      category: activityCategory,
+      minutes,
+      note: activityNote.trim(),
+      date: new Date().toISOString().slice(0, 10),
+      source: "manual",
+      createdAt: Date.now(),
+    };
+
+    await setDoc(doc(db, "activityLogs", String(log.id)), log);
+    setActivityNote("");
+    setActivityTaskId("");
+    notify("گزارش فعالیت روزانه ثبت شد");
+  };
+
+  const sendAutomationReport = async () => {
+    if (!automationEmail.trim()) {
+      setAutomationStatus("ایمیل مقصد را وارد کن.");
+      return;
+    }
+
+    setAutomationStatus("در حال ساخت گزارش و ارسال ایمیل...");
+
+    try {
+      const response = await fetch("api/sprint-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sprintId: automationReport.sprint?.id || null,
+          to: automationEmail.trim(),
+          users,
+          projects,
+          sprints,
+          tasks,
+          activityLogs: teamActivityLogs,
+        }),
+      });
+      const result = await response.json();
+
+      if (!response.ok || !result.ok) {
+        throw new Error(result.error || "Report request failed.");
+      }
+
+      setAutomationStatus(
+        result.delivery?.sent
+          ? "گزارش ایمیل شد."
+          : `گزارش ساخته شد، اما ارسال ایمیل فعال نیست: ${result.delivery?.message || ""}`
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "خطای نامشخص";
+      setAutomationStatus(`ارسال گزارش ناموفق بود: ${message}`);
+    }
   };
 
   const addAttachment = async (files: FileList | null) => {
@@ -1578,6 +1762,10 @@ export default function Home() {
         ...currentTask,
         status: targetColumnKey,
         sprintId: currentTask.sprintId ?? activeSprintId,
+        completedAt:
+          targetColumnKey === "done" && currentTask.status !== "done"
+            ? new Date().toISOString()
+            : currentTask.completedAt,
       };
 
       await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
@@ -1586,6 +1774,11 @@ export default function Home() {
       setDraggedTask(null);
     }
   };
+
+  const asImportObject = (value: unknown): Record<string, unknown> =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
 
   const parseImportFile = async (files: FileList | null) => {
     const file = files?.[0];
@@ -1596,10 +1789,21 @@ export default function Home() {
       let rows: ImportPreviewRow[] = [];
 
       if (file.name.toLowerCase().endsWith(".json")) {
-        const json = JSON.parse(content);
-        const items = Array.isArray(json) ? json : json.issues || json.tasks || [];
+        const json = JSON.parse(content) as unknown;
+        const jsonRecord = asImportObject(json);
+        const issues = jsonRecord.issues;
+        const jsonTasks = jsonRecord.tasks;
+        const items = Array.isArray(json)
+          ? json
+          : Array.isArray(issues)
+            ? issues
+            : Array.isArray(jsonTasks)
+              ? jsonTasks
+              : [];
 
-        rows = items.map((item: any) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        rows = items.map((rawItem: any) => {
+          const item = rawItem;
           const fields = item.fields || item;
           const project = fields.project || {};
 
@@ -1786,6 +1990,8 @@ export default function Home() {
         shiftNeed: "any",
         source: "import",
         importedAt: now,
+        deadlineHistory: [],
+        workLogs: [],
       };
 
       writes.push(setDoc(doc(db, "tasks", String(task.id)), task));
@@ -1826,7 +2032,7 @@ export default function Home() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `rahboard-report-${Date.now()}.csv`;
+    link.download = `rahboard-report-${reportGeneratedAt.getTime()}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -1878,6 +2084,43 @@ export default function Home() {
     return days !== null && days < 0 && task.status !== "done";
   }).length;
   const reportProgress = reportTasks.length ? Math.round((reportDone / reportTasks.length) * 100) : 0;
+  const automationSprint =
+    (automationSprintId
+      ? sprints.find((sprint) => sprint.id === Number(automationSprintId))
+      : null) ||
+    activeSprint ||
+    projectSprints[0] ||
+    null;
+  const automationReport = buildSprintReport({
+    sprint: automationSprint,
+    tasks,
+    users,
+    projects,
+    activityLogs: teamActivityLogs,
+    now: reportGeneratedAt,
+  });
+  const automationReportText = formatSprintReportMarkdown(automationReport);
+  const todayActivitySummary = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const todayLogs = teamActivityLogs.filter((log) => log.date === today);
+
+    return users.map((user) => {
+      const userLogs = todayLogs.filter((log) => log.userId === user.id);
+      const productiveMinutes = userLogs
+        .filter((log) => ["focus", "meeting", "review", "other"].includes(log.category))
+        .reduce((sum, log) => sum + Number(log.minutes || 0), 0);
+      const nonWorkMinutes = userLogs
+        .filter((log) => ["break", "non_work", "idle"].includes(log.category))
+        .reduce((sum, log) => sum + Number(log.minutes || 0), 0);
+
+      return {
+        user,
+        productiveMinutes,
+        nonWorkMinutes,
+        totalMinutes: productiveMinutes + nonWorkMinutes,
+      };
+    });
+  }, [teamActivityLogs, users]);
 
   const currentSelectedTask = selectedTask
     ? tasks.find((task) => task.id === selectedTask.id)
@@ -2137,6 +2380,17 @@ export default function Home() {
               }`}
             >
               گزارش‌ها
+            </button>
+
+            <button
+              onClick={() => setActiveView("automation")}
+              className={`w-full rounded-2xl px-4 py-3 text-right font-semibold ${
+                activeView === "automation"
+                  ? "bg-blue-50 text-blue-700"
+                  : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              AI Ops
             </button>
 
             <button
@@ -3165,6 +3419,216 @@ export default function Home() {
             </section>
           )}
 
+          {activeView === "automation" && (
+            <section className="rounded-3xl border border-white/70 bg-white/80 p-6 shadow-xl shadow-slate-200/60 backdrop-blur">
+              <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-2xl font-black">AI Ops و اتوماسیون</h2>
+                  <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-500">
+                    گزارش پایان اسپرینت، ثبت ساعت کار، رصد شفاف فعالیت روزانه و وبهوک تلگرام از این بخش مدیریت می‌شود.
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-7 text-amber-800">
+                  رصد فعالیت فقط با ثبت شفاف و آگاهانه انجام می‌شود؛ اسکرین‌شات، کی‌لاگ یا جاسوسی مخفی داخل این سیستم اضافه نشده است.
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-4">
+                <div className="rounded-3xl border border-slate-200 bg-white p-5">
+                  <p className="text-sm text-slate-400">پیشرفت اسپرینت</p>
+                  <p className="mt-2 text-3xl font-black text-emerald-700">
+                    {automationReport.totals.progress}%
+                  </p>
+                </div>
+
+                <div className="rounded-3xl border border-slate-200 bg-white p-5">
+                  <p className="text-sm text-slate-400">تکمیل‌شده</p>
+                  <p className="mt-2 text-3xl font-black text-blue-700">
+                    {automationReport.totals.done}/{automationReport.totals.tasks}
+                  </p>
+                </div>
+
+                <div className="rounded-3xl border border-red-200 bg-red-50 p-5">
+                  <p className="text-sm text-red-600">گذشته از ددلاین</p>
+                  <p className="mt-2 text-3xl font-black text-red-700">
+                    {automationReport.totals.openOverdue + automationReport.totals.lateCompleted}
+                  </p>
+                </div>
+
+                <div className="rounded-3xl border border-purple-200 bg-purple-50 p-5">
+                  <p className="text-sm text-purple-600">تغییر ددلاین</p>
+                  <p className="mt-2 text-3xl font-black text-purple-700">
+                    {automationReport.totals.deadlineChanges}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-6 grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+                <div className="space-y-5">
+                  <div className="rounded-3xl border border-slate-200 bg-white p-5">
+                    <h3 className="mb-4 text-xl font-black">ارسال گزارش اسپرینت</h3>
+
+                    <div className="space-y-3">
+                      <select
+                        value={automationSprint?.id || ""}
+                        onChange={(e) => setAutomationSprintId(e.target.value)}
+                        className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none"
+                      >
+                        {sprints.map((sprint) => (
+                          <option key={sprint.id} value={sprint.id}>
+                            {sprint.name}
+                          </option>
+                        ))}
+                      </select>
+
+                      <input
+                        value={automationEmail}
+                        onChange={(e) => setAutomationEmail(e.target.value)}
+                        type="email"
+                        placeholder="report@example.com"
+                        className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                      />
+
+                      <button
+                        onClick={sendAutomationReport}
+                        className="w-full rounded-2xl bg-slate-900 px-5 py-3 text-sm font-black text-white hover:bg-black"
+                      >
+                        ساخت گزارش AI و ارسال ایمیل
+                      </button>
+
+                      {automationStatus && (
+                        <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm leading-7 text-slate-600">
+                          {automationStatus}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-3xl border border-slate-200 bg-white p-5">
+                    <h3 className="mb-4 text-xl font-black">ثبت فعالیت روزانه</h3>
+
+                    <div className="space-y-3">
+                      <select
+                        value={activityCategory}
+                        onChange={(e) =>
+                          setActivityCategory(e.target.value as TeamActivityLog["category"])
+                        }
+                        className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none"
+                      >
+                        <option value="focus">کار عمیق / کدنویسی</option>
+                        <option value="meeting">جلسه</option>
+                        <option value="review">Review / QA</option>
+                        <option value="break">استراحت</option>
+                        <option value="non_work">غیرکاری</option>
+                        <option value="idle">بیکار / نامشخص</option>
+                        <option value="other">سایر</option>
+                      </select>
+
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <input
+                          value={activityMinutes}
+                          onChange={(e) => setActivityMinutes(Number(e.target.value || 0))}
+                          type="number"
+                          min={1}
+                          className="rounded-2xl border border-slate-200 px-4 py-3 outline-none"
+                        />
+
+                        <select
+                          value={activityTaskId}
+                          onChange={(e) => setActivityTaskId(e.target.value)}
+                          className="rounded-2xl border border-slate-200 px-4 py-3 outline-none"
+                        >
+                          <option value="">بدون تسک مشخص</option>
+                          {tasks
+                            .filter(
+                              (task) =>
+                                task.assigneeId === currentUser.id || permissions.canManageTeam
+                            )
+                            .map((task) => (
+                              <option key={task.id} value={task.id}>
+                                {task.code} - {task.title}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+
+                      <textarea
+                        value={activityNote}
+                        onChange={(e) => setActivityNote(e.target.value)}
+                        placeholder="توضیح کوتاه..."
+                        className="min-h-24 w-full resize-none rounded-2xl border border-slate-200 px-4 py-3 leading-7 outline-none"
+                      />
+
+                      <button
+                        onClick={saveActivityEntry}
+                        className="w-full rounded-2xl bg-blue-600 px-5 py-3 text-sm font-black text-white hover:bg-blue-700"
+                      >
+                        ثبت فعالیت
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-3xl border border-slate-200 bg-white p-5">
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                    <h3 className="text-xl font-black">پیش‌نمایش گزارش ایمیل</h3>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-500">
+                      {automationReport.sprint?.name || "All tasks"}
+                    </span>
+                  </div>
+
+                  <pre className="max-h-[560px] overflow-auto whitespace-pre-wrap rounded-2xl bg-slate-950 p-4 text-left text-xs leading-6 text-slate-100">
+                    {automationReportText}
+                  </pre>
+                </div>
+              </div>
+
+              {permissions.canManageTeam && (
+                <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-5">
+                  <h3 className="mb-4 text-xl font-black">خلاصه فعالیت امروز تیم</h3>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[720px] text-right text-sm">
+                      <thead className="bg-slate-50 text-xs text-slate-500">
+                        <tr>
+                          <th className="p-4">عضو تیم</th>
+                          <th className="p-4">کار مفید</th>
+                          <th className="p-4">استراحت / غیرکاری</th>
+                          <th className="p-4">کل ثبت امروز</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {todayActivitySummary.map((item) => (
+                          <tr key={item.user.id} className="border-t border-slate-100">
+                            <td className="p-4 font-bold">{item.user.name}</td>
+                            <td className="p-4 text-emerald-700">
+                              {Math.round((item.productiveMinutes / 60) * 10) / 10} ساعت
+                            </td>
+                            <td className="p-4 text-amber-700">
+                              {Math.round((item.nonWorkMinutes / 60) * 10) / 10} ساعت
+                            </td>
+                            <td className="p-4">
+                              {Math.round((item.totalMinutes / 60) * 10) / 10} ساعت
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-6 rounded-3xl border border-blue-200 bg-blue-50 p-5 text-sm leading-7 text-blue-800">
+                <h3 className="mb-2 text-lg font-black">تلگرام</h3>
+                <p>
+                  وبهوک تلگرام روی مسیر <span className="font-mono">/api/telegram/webhook</span> آماده است.
+                  هر پیام متنی کانال را به تسک تبدیل می‌کند؛ دستور <span className="font-mono">/sprint_report</span> هم گزارش اسپرینت فعال را می‌سازد.
+                </p>
+              </div>
+            </section>
+          )}
+
           {activeView === "okr" && (
             <OKRPerformancePage
               users={users}
@@ -3947,6 +4411,85 @@ export default function Home() {
 
             {selectedTask && currentSelectedTask && (
               <>
+                <div className="mb-8 rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                  <h3 className="mb-4 text-xl font-black">ساعت کار و تاریخچه ددلاین</h3>
+
+                  {canLogWork(currentSelectedTask) && (
+                    <div className="mb-5 grid gap-3 md:grid-cols-[160px_1fr_auto]">
+                      <input
+                        type="number"
+                        min="0.25"
+                        step="0.25"
+                        value={workLogHours}
+                        onChange={(e) => setWorkLogHours(Number(e.target.value || 0))}
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                      />
+
+                      <input
+                        value={workLogNote}
+                        onChange={(e) => setWorkLogNote(e.target.value)}
+                        placeholder="روی چه چیزی کار شد؟"
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                      />
+
+                      <button
+                        onClick={addWorkLogToTask}
+                        className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-black text-white"
+                      >
+                        ثبت ساعت
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="rounded-2xl bg-white p-4">
+                      <h4 className="mb-3 text-sm font-black text-slate-600">Work logs</h4>
+                      <div className="space-y-2">
+                        {(currentSelectedTask.workLogs || []).map((log) => (
+                          <div
+                            key={log.id}
+                            className="rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm"
+                          >
+                            <div className="font-bold">
+                              {log.userName || getUserName(log.userId)} - {Math.round((log.minutes / 60) * 10) / 10} ساعت
+                            </div>
+                            {log.note && (
+                              <div className="mt-1 text-xs text-slate-500">{log.note}</div>
+                            )}
+                          </div>
+                        ))}
+
+                        {(currentSelectedTask.workLogs || []).length === 0 && (
+                          <div className="text-sm text-slate-400">هنوز ساعتی ثبت نشده است.</div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-white p-4">
+                      <h4 className="mb-3 text-sm font-black text-slate-600">Deadline history</h4>
+                      <div className="space-y-2">
+                        {(currentSelectedTask.deadlineHistory || []).map((item) => (
+                          <div
+                            key={item.id}
+                            className="rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm"
+                          >
+                            <div className="font-bold">
+                              {item.previousDeadline || "-"} → {item.nextDeadline || "-"}
+                            </div>
+                            <div className="mt-1 text-xs text-slate-500">
+                              {item.changedByName || getUserName(item.changedBy)} · {item.changedAt?.slice(0, 10)}
+                            </div>
+                          </div>
+                        ))}
+
+                        {(currentSelectedTask.deadlineHistory || []).length === 0 && (
+                          <div className="text-sm text-slate-400">تغییر ددلاین ثبت نشده است.</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="mb-8 rounded-3xl border border-slate-200 bg-slate-50 p-5">
                   <h3 className="mb-4 text-xl font-black">فایل‌ها</h3>
 
