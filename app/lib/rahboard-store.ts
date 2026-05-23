@@ -51,19 +51,25 @@ const toFirestoreFields = (data: Record<string, unknown>) =>
       .map(([key, value]) => [key, toFirestoreValue(value)])
   );
 
-const saveTaskWithRestApi = async (task: Record<string, unknown>) => {
+const saveDocumentWithRestApi = async (
+  collectionName: string,
+  documentId: string,
+  data: Record<string, unknown>
+) => {
   const response = await fetch(
-    `https://firestore.googleapis.com/v1/projects/${firebaseProjectId}/databases/(default)/documents/tasks/${task.id}?key=${firebaseApiKey}`,
+    `https://firestore.googleapis.com/v1/projects/${firebaseProjectId}/databases/(default)/documents/${collectionName}/${documentId}?key=${firebaseApiKey}`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fields: toFirestoreFields(task) }),
+      body: JSON.stringify({ fields: toFirestoreFields(data) }),
     }
   );
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Firestore REST write failed with ${response.status}: ${errorText}`);
+    throw new Error(
+      `Firestore REST write to ${collectionName}/${documentId} failed with ${response.status}: ${errorText}`
+    );
   }
 };
 
@@ -90,6 +96,7 @@ export async function createTaskFromTelegramText(text: string) {
   const parsed = parseTelegramTaskText(text);
   const projectId = Number(process.env.TELEGRAM_DEFAULT_PROJECT_ID || 1);
   const projectKey = process.env.TELEGRAM_DEFAULT_PROJECT_KEY || "RB";
+  const projectName = process.env.TELEGRAM_DEFAULT_PROJECT_NAME || "Telegram Inbox";
   const sprintId = process.env.TELEGRAM_DEFAULT_SPRINT_ID
     ? Number(process.env.TELEGRAM_DEFAULT_SPRINT_ID)
     : null;
@@ -124,6 +131,15 @@ export async function createTaskFromTelegramText(text: string) {
     deadlineHistory: [],
   };
 
-  await saveTaskWithRestApi(task);
+  await Promise.all([
+    saveDocumentWithRestApi("projects", String(projectId), {
+      id: projectId,
+      name: projectName,
+      key: projectKey,
+      createdAt: 1,
+    }),
+    saveDocumentWithRestApi("tasks", String(task.id), task),
+  ]);
+
   return task;
 }
