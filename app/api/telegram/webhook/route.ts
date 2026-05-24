@@ -13,21 +13,30 @@ import { buildSprintReport } from "@/app/lib/reporting";
 export const runtime = "nodejs";
 
 type TelegramUpdate = {
-  message?: {
-    chat: { id: number | string };
-    text?: string;
-  };
-  channel_post?: {
-    chat: { id: number | string };
-    text?: string;
-  };
+  message?: TelegramMessage;
+  channel_post?: TelegramMessage;
   callback_query?: {
     id: string;
     data?: string;
-    message?: {
-      chat: { id: number | string };
-    };
+    message?: TelegramMessage;
   };
+};
+
+type TelegramMessage = {
+  chat: {
+    id: number | string;
+    type?: "private" | "group" | "supergroup" | "channel";
+    title?: string;
+  };
+  from?: {
+    id: number | string;
+    username?: string;
+    first_name?: string;
+    last_name?: string;
+  };
+  text?: string;
+  caption?: string;
+  reply_to_message?: TelegramMessage;
 };
 
 const taskRegistrationKeyboard = {
@@ -44,6 +53,42 @@ const taskRegistrationTemplate = [
 
 const isTaskRegistrationRequest = (text: string) =>
   /^(\/start|\/help|\/new_task|\/task|ثبت\s*تسک)$/i.test(text.trim());
+
+const isWhoAmIRequest = (text: string) =>
+  /^(\/whoami(?:@\w+)?|آیدی من|ایدی من|id من)$/i.test(text.trim());
+
+const isGroupChat = (message: TelegramMessage) =>
+  message.chat.type === "group" || message.chat.type === "supergroup";
+
+const approvalPattern = /(?:#\s*تایید[\s_]*تسک|#\s*تأیید[\s_]*تسک|\/approve_task(?:@\w+)?)/i;
+
+const getApproverIds = () =>
+  (process.env.TELEGRAM_TASK_APPROVER_IDS || "")
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const isApprovedMember = (message: TelegramMessage) => {
+  const approverIds = getApproverIds();
+  const fromId = message.from?.id ? String(message.from.id) : "";
+
+  return Boolean(fromId && approverIds.includes(fromId));
+};
+
+const approvalDeniedMessage = () =>
+  getApproverIds().length === 0
+    ? "هنوز شناسه تاییدکننده تسک تنظیم نشده است. عضو مورد نظر /whoami را بفرستد، بعد آن عدد را در TELEGRAM_TASK_APPROVER_IDS بگذار."
+    : "شما اجازه تایید ساخت تسک را ندارید.";
+
+const extractApprovedTaskText = (message: TelegramMessage, text: string) => {
+  const cleanedText = text.replace(approvalPattern, "").trim();
+  const replyText =
+    message.reply_to_message?.text?.trim() ||
+    message.reply_to_message?.caption?.trim() ||
+    "";
+
+  return replyText || cleanedText;
+};
 
 const verifySecret = (request: Request) => {
   const expected = process.env.TELEGRAM_WEBHOOK_SECRET;
@@ -89,10 +134,25 @@ export async function POST(request: Request) {
 
     const item = update.channel_post || update.message;
     const chatId = item?.chat.id;
-    const text = item?.text?.trim();
+    const text = (item?.text || item?.caption || "").trim();
 
     if (!chatId || !text) {
       return Response.json({ ok: true, ignored: true });
+    }
+
+    if (isWhoAmIRequest(text)) {
+      await sendTelegramMessage(
+        chatId,
+        item.from?.id
+          ? `شناسه تلگرام شما: ${item.from.id}`
+          : "برای پیام‌های کانال، شناسه کاربر فرستنده در دسترس نیست.",
+        {
+          parseMode: "none",
+          replyMarkup: taskRegistrationKeyboard,
+        }
+      );
+
+      return Response.json({ ok: true, command: "whoami" });
     }
 
     if (isTaskRegistrationRequest(text)) {
@@ -137,6 +197,49 @@ export async function POST(request: Request) {
       }
 
       return Response.json({ ok: true, command: "sprint_report", delivery });
+    }
+
+    if (isGroupChat(item)) {
+      if (!approvalPattern.test(text)) {
+        return Response.json({ ok: true, ignored: "group_message_without_task_approval" });
+      }
+
+      if (!isApprovedMember(item)) {
+        await sendTelegramMessage(chatId, approvalDeniedMessage(), {
+          parseMode: "none",
+          replyMarkup: taskRegistrationKeyboard,
+        });
+
+        return Response.json({ ok: true, ignored: "unauthorized_task_approver" });
+      }
+
+      const approvedTaskText = extractApprovedTaskText(item, text);
+
+      if (!approvedTaskText) {
+        await sendTelegramMessage(
+          chatId,
+          "روی پیام مشکل ریپلای کن و #تایید_تسک را بفرست، یا متن مشکل را کنار همان هشتگ بنویس.",
+          {
+            parseMode: "none",
+            replyMarkup: taskRegistrationKeyboard,
+          }
+        );
+
+        return Response.json({ ok: true, ignored: "empty_approved_task" });
+      }
+
+      const task = await createTaskFromTelegramText(approvedTaskText);
+
+      try {
+        await sendTelegramMessage(chatId, `تسک ساخته شد: ${task.code}\n${task.title}`, {
+          parseMode: "none",
+          replyMarkup: taskRegistrationKeyboard,
+        });
+      } catch (error) {
+        console.error("Telegram group task reply error:", error);
+      }
+
+      return Response.json({ ok: true, command: "approved_group_task", task });
     }
 
     const task = await createTaskFromTelegramText(text);
