@@ -39,6 +39,11 @@ type TelegramMessage = {
   quote?: {
     text?: string;
   };
+  external_reply?: {
+    quote?: {
+      text?: string;
+    };
+  };
   reply_to_message?: TelegramMessage;
 };
 
@@ -89,9 +94,22 @@ const extractApprovedTaskText = (message: TelegramMessage, text: string) => {
     message.reply_to_message?.text?.trim() ||
     message.reply_to_message?.caption?.trim() ||
     message.quote?.text?.trim() ||
+    message.external_reply?.quote?.text?.trim() ||
     "";
 
   return replyText || cleanedText;
+};
+
+const missingReplyTextMessage = (message: TelegramMessage) => {
+  const hasReply = Boolean(message.reply_to_message);
+  const hasQuote = Boolean(message.quote?.text || message.external_reply?.quote?.text);
+
+  return [
+    "متن پیام ریپلای‌شده به بات نرسید، برای همین نمی‌توانم از روی ریپلای تسک بسازم.",
+    `reply=${hasReply ? "yes" : "no"} quote=${hasQuote ? "yes" : "no"}`,
+    "در BotFather برای این بات Privacy Mode را خاموش کن: /setprivacy -> انتخاب بات -> Disable",
+    "بعد دوباره روی پیام مشکل Reply بزن و /approve_task را بفرست.",
+  ].join("\n");
 };
 
 const verifySecret = (request: Request) => {
@@ -222,7 +240,7 @@ export async function POST(request: Request) {
       if (!approvedTaskText) {
         await sendTelegramMessage(
           chatId,
-          "روی پیام مشکل ریپلای کن و #تایید_تسک را بفرست، یا متن مشکل را کنار همان هشتگ بنویس.",
+          missingReplyTextMessage(item),
           {
             parseMode: "none",
             replyMarkup: taskRegistrationKeyboard,
