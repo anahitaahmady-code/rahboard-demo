@@ -9,7 +9,6 @@ import {
   loadRahboardData,
 } from "@/app/lib/rahboard-store";
 import { buildSprintReport } from "@/app/lib/reporting";
-import { buildTelegramTaskFormKeyboard } from "@/app/lib/telegram-task-form";
 
 export const runtime = "nodejs";
 
@@ -31,9 +30,16 @@ type TelegramUpdate = {
   };
 };
 
-const taskRegistrationIntro = [
-  "برای ثبت تسک، روی دکمه زیر بزن.",
-  "یک فرم باز می‌شود که عنوان و توضیحات را جداگانه می‌گیرد.",
+const taskRegistrationKeyboard = {
+  inline_keyboard: [[{ text: "ثبت تسک", callback_data: "new_task" }]],
+};
+
+const taskRegistrationTemplate = [
+  "برای ثبت تسک، این قالب را پر کن و بفرست:",
+  "",
+  "ثبت تسک",
+  "عنوان: ",
+  "توضیح: ",
 ].join("\n");
 
 const isTaskRegistrationRequest = (text: string) =>
@@ -72,9 +78,9 @@ export async function POST(request: Request) {
       }
 
       if (callbackChatId) {
-        await sendTelegramMessage(callbackChatId, taskRegistrationIntro, {
+        await sendTelegramMessage(callbackChatId, taskRegistrationTemplate, {
           parseMode: "none",
-          replyMarkup: buildTelegramTaskFormKeyboard(request.url, callbackChatId),
+          replyMarkup: taskRegistrationKeyboard,
         });
       }
 
@@ -90,9 +96,9 @@ export async function POST(request: Request) {
     }
 
     if (isTaskRegistrationRequest(text)) {
-      await sendTelegramMessage(chatId, taskRegistrationIntro, {
+      await sendTelegramMessage(chatId, taskRegistrationTemplate, {
         parseMode: "none",
-        replyMarkup: buildTelegramTaskFormKeyboard(request.url, chatId),
+        replyMarkup: taskRegistrationKeyboard,
       });
 
       return Response.json({ ok: true, command: "new_task_prompt" });
@@ -124,10 +130,7 @@ export async function POST(request: Request) {
           delivery?.sent
             ? "گزارش اسپرینت ایمیل شد."
             : "گزارش ساخته شد، ولی ایمیل مقصد یا سرویس ارسال تنظیم نشده است.",
-          {
-            parseMode: "none",
-            replyMarkup: buildTelegramTaskFormKeyboard(request.url, chatId),
-          }
+          { replyMarkup: taskRegistrationKeyboard }
         );
       } catch (error) {
         console.error("Telegram report reply error:", error);
@@ -139,8 +142,7 @@ export async function POST(request: Request) {
     const task = await createTaskFromTelegramText(text);
     try {
       await sendTelegramMessage(chatId, `تسک ساخته شد: ${task.code}\n${task.title}`, {
-        parseMode: "none",
-        replyMarkup: buildTelegramTaskFormKeyboard(request.url, chatId, "ثبت تسک جدید"),
+        replyMarkup: taskRegistrationKeyboard,
       });
     } catch (error) {
       console.error("Telegram task reply error:", error);
