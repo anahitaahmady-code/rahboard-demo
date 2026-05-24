@@ -566,8 +566,7 @@ export default function Home() {
   const [workEvidenceDrafts, setWorkEvidenceDrafts] = useState<WorkEvidenceDraft[]>([
     { id: 1, url: "", note: "" },
   ]);
-  const [isStoppingTimer, setIsStoppingTimer] = useState(false);
-  const [timerIdleMs, setTimerIdleMs] = useState(0);
+  const [, setTimerIdleMs] = useState(0);
   const [lastTimerActivityAt, setLastTimerActivityAt] = useState(() => currentTimeMs());
   const [activeWorkTimer, setActiveWorkTimer] = useState<ActiveWorkTimer | null>(() => {
     if (typeof window === "undefined") return null;
@@ -1649,21 +1648,6 @@ export default function Home() {
     return evidence;
   };
 
-  const evidenceDuringTimer = (task: Task, timer: ActiveWorkTimer) =>
-    (task.evidence || []).filter((item) => {
-      const evidenceTime = new Date(item.createdAt).getTime();
-      return (
-        item.userId === timer.userId &&
-        evidenceTime >= new Date(timer.startedAt).getTime() &&
-        evidenceTime <= currentTimeMs()
-      );
-    });
-
-  const hasLinkEvidenceDuringTimer = (task: Task, timer: ActiveWorkTimer) =>
-    evidenceDuringTimer(task, timer).some(
-      (item) => item.type === "link" && Boolean(item.url?.trim())
-    );
-
   const calculateWorkConfidence = ({
     minutes,
     idleMinutes,
@@ -1749,89 +1733,6 @@ export default function Home() {
       startedAt: new Date().toISOString(),
     });
     notify("تایمر کار روی تسک شروع شد");
-  };
-
-  const stopWorkTimer = async () => {
-    if (!activeWorkTimer || isStoppingTimer) return;
-
-    const currentTask =
-      tasks.find((task) => task.id === activeWorkTimer.taskId) ||
-      (currentSelectedTask?.id === activeWorkTimer.taskId ? currentSelectedTask : null) ||
-      (selectedTask?.id === activeWorkTimer.taskId ? selectedTask : null);
-    if (!currentTask) {
-      alert("Task not found. Please refresh the board and try stopping the timer again.");
-      return;
-    }
-
-    if (!canLogWork(currentTask)) {
-      showNoAccess();
-      return;
-    }
-
-    const timerEvidence = evidenceDuringTimer(currentTask, activeWorkTimer);
-    const hasEvidenceLink = timerEvidence.some(
-      (item) => item.type === "link" && Boolean(item.url?.trim())
-    );
-
-    if (!hasEvidenceLink) {
-      notify("قبل از توقف تایمر باید لینک شاهد کار ثبت شود");
-      alert("برای توقف تایمر، اول یک لینک شاهد کار مثل commit، PR، deploy یا سند کار ثبت کن.");
-      return;
-    }
-
-    setIsStoppingTimer(true);
-
-    try {
-    const endedAt = new Date().toISOString();
-    const durationMs =
-      new Date(endedAt).getTime() - new Date(activeWorkTimer.startedAt).getTime();
-    const minutes = Math.max(1, Math.round(durationMs / 60000));
-    const idleMinutes = Math.min(minutes, Math.round(timerIdleMs / 60000));
-    const activeMinutes = Math.max(0, minutes - idleMinutes);
-    const confidence = calculateWorkConfidence({
-      minutes,
-      idleMinutes,
-      evidenceCount: timerEvidence.length,
-      source: "timer",
-    });
-    const workLog: WorkLog = {
-      id: nextLocalId(),
-      taskId: currentTask.id,
-      userId: activeWorkTimer.userId,
-      userName: activeWorkTimer.userName,
-      minutes,
-      note: workLogNote.trim() || "ثبت‌شده با تایمر",
-      source: "timer",
-      verification: "timed",
-      startedAt: activeWorkTimer.startedAt,
-      endedAt,
-      durationMs,
-      activeMinutes,
-      idleMinutes,
-      evidenceCount: timerEvidence.length,
-      confidenceScore: confidence.score,
-      reviewFlags: confidence.flags,
-      loggedAt: endedAt,
-      createdAt: currentTimeMs(),
-    };
-
-      await saveTaskDocument({
-        ...currentTask,
-        workLogs: [workLog, ...(currentTask.workLogs || [])],
-      });
-
-    setActiveWorkTimer(null);
-    setTimerIdleMs(0);
-    setLastTimerActivityAt(currentTimeMs());
-    setWorkLogNote("");
-    notify("تایمر متوقف شد و زمان واقعی ثبت شد");
-    } catch (error) {
-      console.error("Stop work timer error:", error);
-      const message = error instanceof Error ? error.message : "Unknown error";
-      alert(`Timer could not be saved: ${message}`);
-    } finally {
-      setIsStoppingTimer(false);
-    }
   };
 
   const addWorkLogToTask = async () => {
@@ -2039,6 +1940,11 @@ export default function Home() {
       ]);
 
       setActiveLinkWorkSession(null);
+      if (activeWorkTimer?.taskId === currentTask.id) {
+        setActiveWorkTimer(null);
+        setTimerIdleMs(0);
+        setLastTimerActivityAt(currentTimeMs());
+      }
       notify(`${formatMinutes(minutes)} کار روی لینک ثبت شد`);
     } catch (error) {
       console.error("Link work session save error:", error);
@@ -5242,12 +5148,11 @@ export default function Home() {
                   {activeWorkTimer && (
                     <div className="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm leading-7 text-emerald-800">
                       تایمر فعال: {activeWorkTimer.taskCode} - {formatMinutes(getTimerElapsedMinutes(activeWorkTimer))}
-                      {currentSelectedTask.id === activeWorkTimer.taskId &&
-                        !hasLinkEvidenceDuringTimer(currentSelectedTask, activeWorkTimer) && (
-                          <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
-                            برای توقف و ثبت تایمر، اول لینک commit، PR، deploy یا سند کار را در بخش ثبت شاهد ذخیره کن.
-                          </div>
-                        )}
+                      {currentSelectedTask.id === activeWorkTimer.taskId && (
+                        <div className="mt-2 rounded-xl border border-emerald-200 bg-white/70 px-3 py-2 text-emerald-800">
+                          برای ثبت اتوماتیک زمان، لینک شاهد را وارد کن، روی شروع لینک بزن و بعد از کار با پایان و ثبت تمام کن.
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -5271,113 +5176,114 @@ export default function Home() {
                   )}
 
                   {canLogWork(currentSelectedTask) && (
-                    <div className="mb-5 grid gap-3 md:grid-cols-[1fr_auto_auto]">
-                      <input
-                        value={workLogNote}
-                        onChange={(e) => setWorkLogNote(e.target.value)}
-                        placeholder="روی چه چیزی کار شد؟"
-                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
-                      />
-
-                      <button
-                        onClick={() => startWorkTimer(currentSelectedTask)}
-                        disabled={Boolean(activeWorkTimer)}
-                        className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300"
-                      >
-                        شروع تایمر
-                      </button>
-
-                      <button
-                        onClick={stopWorkTimer}
-                        disabled={!activeWorkTimer || isStoppingTimer}
-                        className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300"
-                      >
-                        توقف و ثبت
-                      </button>
-                    </div>
-                  )}
-
-                  {canLogWork(currentSelectedTask) && (
-                    <div className="mb-5 grid gap-3 md:grid-cols-[160px_1fr_auto]">
-                      <input
-                        type="number"
-                        min="0.25"
-                        step="0.25"
-                        value={workLogHours}
-                        onChange={(e) => setWorkLogHours(Number(e.target.value || 0))}
-                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
-                      />
-
-                      <input
-                        value={workLogNote}
-                        onChange={(e) => setWorkLogNote(e.target.value)}
-                        placeholder="روی چه چیزی کار شد؟"
-                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
-                      />
-
-                      <button
-                        onClick={addWorkLogToTask}
-                        className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-black text-white"
-                      >
-                        ثبت ساعت
-                      </button>
-                    </div>
-                  )}
-
-                  {canLogWork(currentSelectedTask) && (
-                    <div className="mb-5 space-y-3">
-                      {workEvidenceDrafts.map((draft, index) => (
-                        <div
-                          key={draft.id}
-                          className="grid gap-3 md:grid-cols-[1fr_1.3fr_auto_auto_auto]"
-                        >
-                          <input
-                            value={draft.note}
-                            onChange={(e) =>
-                              updateWorkEvidenceDraft(draft.id, "note", e.target.value)
-                            }
-                            placeholder="چه کاری انجام شد؟"
-                            className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
-                          />
-                          <input
-                            value={draft.url}
-                            onChange={(e) =>
-                              updateWorkEvidenceDraft(draft.id, "url", e.target.value)
-                            }
-                            placeholder="لینک commit / PR / deploy / سند کار"
-                            className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
-                          />
-
-                          <button
-                            onClick={() => saveEvidenceDraftToTask(draft)}
-                            disabled={!draft.url.trim()}
-                            className="rounded-2xl bg-blue-600 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300"
-                          >
-                            ثبت شاهد
-                          </button>
-
-                          <button
-                            onClick={() => startLinkWorkSession(draft)}
-                            disabled={!draft.url.trim() || Boolean(activeLinkWorkSession)}
-                            className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300"
-                          >
-                            شروع لینک
-                          </button>
-
-                          <button
-                            onClick={
-                              index === 0
-                                ? addWorkEvidenceDraft
-                                : () => removeWorkEvidenceDraft(draft.id)
-                            }
-                            className="h-12 w-12 rounded-2xl border border-slate-200 bg-white text-xl font-black text-slate-700"
-                            aria-label={index === 0 ? "افزودن شاهد" : "حذف شاهد"}
-                            title={index === 0 ? "افزودن شاهد" : "حذف شاهد"}
-                          >
-                            {index === 0 ? "+" : "×"}
-                          </button>
+                    <div className="mb-5 rounded-2xl border border-emerald-100 bg-white p-4">
+                      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <h4 className="text-sm font-black text-slate-700">ثبت اتوماتیک با شاهد</h4>
+                          <p className="mt-1 text-xs leading-6 text-slate-500">
+                            تایمر را شروع کن، لینک شاهد را ثبت کن و با پایان و ثبت زمان واقعی لینک را ذخیره کن.
+                          </p>
                         </div>
-                      ))}
+
+                        <button
+                          onClick={() => startWorkTimer(currentSelectedTask)}
+                          disabled={Boolean(activeWorkTimer)}
+                          className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300"
+                        >
+                          شروع تایمر
+                        </button>
+                      </div>
+
+                      <div className="space-y-3">
+                        {workEvidenceDrafts.map((draft, index) => (
+                          <div
+                            key={draft.id}
+                            className="grid gap-3 md:grid-cols-[1fr_1.3fr_auto_auto_auto]"
+                          >
+                            <input
+                              value={draft.note}
+                              onChange={(e) =>
+                                updateWorkEvidenceDraft(draft.id, "note", e.target.value)
+                              }
+                              placeholder="چه کاری انجام شد؟"
+                              className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                            />
+                            <input
+                              value={draft.url}
+                              onChange={(e) =>
+                                updateWorkEvidenceDraft(draft.id, "url", e.target.value)
+                              }
+                              placeholder="لینک commit / PR / deploy / سند کار"
+                              className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                            />
+
+                            <button
+                              onClick={() => saveEvidenceDraftToTask(draft)}
+                              disabled={!draft.url.trim()}
+                              className="rounded-2xl bg-blue-600 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300"
+                            >
+                              ثبت شاهد
+                            </button>
+
+                            <button
+                              onClick={() => startLinkWorkSession(draft)}
+                              disabled={!draft.url.trim() || Boolean(activeLinkWorkSession)}
+                              className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300"
+                            >
+                              شروع لینک
+                            </button>
+
+                            <button
+                              onClick={
+                                index === 0
+                                  ? addWorkEvidenceDraft
+                                  : () => removeWorkEvidenceDraft(draft.id)
+                              }
+                              className="h-12 w-12 rounded-2xl border border-slate-200 bg-white text-xl font-black text-slate-700"
+                              aria-label={index === 0 ? "افزودن شاهد" : "حذف شاهد"}
+                              title={index === 0 ? "افزودن شاهد" : "حذف شاهد"}
+                            >
+                              {index === 0 ? "+" : "×"}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {canLogWork(currentSelectedTask) && (
+                    <div className="mb-5 rounded-2xl border border-amber-100 bg-white p-4">
+                      <div className="mb-4">
+                        <h4 className="text-sm font-black text-slate-700">ثبت دستی گزارش کار</h4>
+                        <p className="mt-1 text-xs leading-6 text-slate-500">
+                          برای کارهایی که تایمر و لینک شاهد ندارند، ساعت و توضیح را دستی ثبت کن.
+                        </p>
+                      </div>
+
+                      <div className="grid gap-3 md:grid-cols-[160px_1fr_auto]">
+                        <input
+                          type="number"
+                          min="0.25"
+                          step="0.25"
+                          value={workLogHours}
+                          onChange={(e) => setWorkLogHours(Number(e.target.value || 0))}
+                          className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                        />
+
+                        <input
+                          value={workLogNote}
+                          onChange={(e) => setWorkLogNote(e.target.value)}
+                          placeholder="روی چه چیزی کار شد؟"
+                          className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                        />
+
+                        <button
+                          onClick={addWorkLogToTask}
+                          className="rounded-2xl bg-amber-600 px-5 py-3 text-sm font-black text-white"
+                        >
+                          ثبت ساعت
+                        </button>
+                      </div>
                     </div>
                   )}
 
