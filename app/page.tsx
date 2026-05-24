@@ -1564,6 +1564,11 @@ export default function Home() {
       );
     });
 
+  const hasLinkEvidenceDuringTimer = (task: Task, timer: ActiveWorkTimer) =>
+    evidenceDuringTimer(task, timer).some(
+      (item) => item.type === "link" && Boolean(item.url?.trim())
+    );
+
   const calculateWorkConfidence = ({
     minutes,
     idleMinutes,
@@ -1660,6 +1665,17 @@ export default function Home() {
       return;
     }
 
+    const timerEvidence = evidenceDuringTimer(currentTask, activeWorkTimer);
+    const hasEvidenceLink = timerEvidence.some(
+      (item) => item.type === "link" && Boolean(item.url?.trim())
+    );
+
+    if (!hasEvidenceLink) {
+      notify("قبل از توقف تایمر باید لینک شاهد کار ثبت شود");
+      alert("برای توقف تایمر، اول یک لینک شاهد کار مثل commit، PR، deploy یا سند کار ثبت کن.");
+      return;
+    }
+
     setIsStoppingTimer(true);
 
     try {
@@ -1669,7 +1685,6 @@ export default function Home() {
     const minutes = Math.max(1, Math.round(durationMs / 60000));
     const idleMinutes = Math.min(minutes, Math.round(timerIdleMs / 60000));
     const activeMinutes = Math.max(0, minutes - idleMinutes);
-    const timerEvidence = evidenceDuringTimer(currentTask, activeWorkTimer);
     const confidence = calculateWorkConfidence({
       minutes,
       idleMinutes,
@@ -1790,11 +1805,17 @@ export default function Home() {
     );
 
     try {
-      await saveTaskDocument({
+      const updatedTask: Task = {
         ...currentTask,
         evidence: [evidence, ...(currentTask.evidence || [])],
-      });
+      };
 
+      await saveTaskDocument(updatedTask);
+
+      setTasks((prev) =>
+        prev.map((task) => (task.id === updatedTask.id ? updatedTask : task))
+      );
+      setSelectedTask((prev) => (prev?.id === updatedTask.id ? updatedTask : prev));
       setWorkEvidenceUrl("");
       notify("شاهد کار ثبت شد");
     } catch (error) {
@@ -4951,6 +4972,12 @@ export default function Home() {
                   {activeWorkTimer && (
                     <div className="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm leading-7 text-emerald-800">
                       تایمر فعال: {activeWorkTimer.taskCode} - {formatMinutes(getTimerElapsedMinutes(activeWorkTimer))}
+                      {currentSelectedTask.id === activeWorkTimer.taskId &&
+                        !hasLinkEvidenceDuringTimer(currentSelectedTask, activeWorkTimer) && (
+                          <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
+                            برای توقف و ثبت تایمر، اول لینک commit، PR، deploy یا سند کار را در بخش ثبت شاهد ذخیره کن.
+                          </div>
+                        )}
                     </div>
                   )}
 
