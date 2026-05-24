@@ -1221,8 +1221,14 @@ export default function OKRPerformancePage({
       )}
 
       {isObjectiveModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-3xl bg-white p-6 shadow-2xl">
+        <div
+          onMouseDown={() => setIsObjectiveModalOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm"
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="w-full max-w-2xl rounded-3xl bg-white p-6 shadow-2xl"
+          >
             <div className="mb-5 flex items-center justify-between">
               <div>
                 <h3 className="text-2xl font-black">
@@ -1330,8 +1336,14 @@ export default function OKRPerformancePage({
       )}
 
       {isKeyResultModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-xl rounded-3xl bg-white p-6 shadow-2xl">
+        <div
+          onMouseDown={() => setIsKeyResultModalOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm"
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="w-full max-w-xl rounded-3xl bg-white p-6 shadow-2xl"
+          >
             <div className="mb-5 flex items-center justify-between">
               <div>
                 <h3 className="text-2xl font-black">افزودن Key Result</h3>
@@ -1426,8 +1438,14 @@ export default function OKRPerformancePage({
       )}
 
       {isKpiModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-xl rounded-3xl bg-white p-6 shadow-2xl">
+        <div
+          onMouseDown={() => setIsKpiModalOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm"
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="w-full max-w-xl rounded-3xl bg-white p-6 shadow-2xl"
+          >
             <div className="mb-5 flex items-center justify-between">
               <div>
                 <h3 className="text-2xl font-black">ساخت KPI</h3>
@@ -1532,8 +1550,14 @@ export default function OKRPerformancePage({
       )}
 
       {isReviewModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-3xl bg-white p-6 shadow-2xl">
+        <div
+          onMouseDown={() => setIsReviewModalOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm"
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="w-full max-w-2xl rounded-3xl bg-white p-6 shadow-2xl"
+          >
             <div className="mb-5 flex items-center justify-between">
               <div>
                 <h3 className="text-2xl font-black">ثبت ارزیابی عملکرد</h3>

@@ -1529,6 +1529,8 @@ export default function Home() {
       return;
     }
 
+    if (!confirm(`تسک ${task.code} حذف شود؟`)) return;
+
     await deleteDoc(doc(db, "tasks", String(id)));
 
     setIsTaskModalOpen(false);
@@ -3917,6 +3919,18 @@ export default function Home() {
                             </option>
                           ))}
                         </select>
+
+                        {canDeleteTask(task) && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteTask(task.id);
+                            }}
+                            className="rounded-2xl border border-red-100 px-3 py-2 text-xs font-bold text-red-500 hover:bg-red-50"
+                          >
+                            حذف
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -4571,8 +4585,14 @@ export default function Home() {
       </div>
 
       {isWorkScheduleModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-xl rounded-3xl bg-white p-6 shadow-2xl">
+        <div
+          onMouseDown={() => setIsWorkScheduleModalOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm"
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="w-full max-w-xl rounded-3xl bg-white p-6 shadow-2xl"
+          >
             <div className="mb-5 flex items-center justify-between">
               <div>
                 <h2 className="text-2xl font-black">تنظیم ساعت کاری</h2>
@@ -4698,8 +4718,14 @@ export default function Home() {
       )}
 
       {isProjectModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+        <div
+          onMouseDown={closeProjectModal}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm"
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl"
+          >
             <h2 className="mb-5 text-xl font-black">
               {editingProjectId ? "ویرایش پروژه" : "افزودن پروژه"}
             </h2>
@@ -4759,8 +4785,14 @@ export default function Home() {
       )}
 
       {isSprintModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-3xl bg-white p-6 shadow-2xl">
+        <div
+          onMouseDown={closeSprintModal}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm"
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="w-full max-w-2xl rounded-3xl bg-white p-6 shadow-2xl"
+          >
             <h2 className="mb-5 text-xl font-black">
               {editingSprintId ? "ویرایش اسپرینت" : "ایجاد اسپرینت"}
             </h2>
@@ -4826,8 +4858,14 @@ export default function Home() {
       )}
 
       {isColumnModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+        <div
+          onMouseDown={() => setIsColumnModalOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm"
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl"
+          >
             <h2 className="mb-5 text-xl font-black">
               {editingColumnKey ? "ویرایش ستون" : "افزودن ستون"}
             </h2>
@@ -4868,8 +4906,14 @@ export default function Home() {
       )}
 
       {isUserModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+        <div
+          onMouseDown={() => setIsUserModalOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm"
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl"
+          >
             <h2 className="mb-5 text-xl font-black">افزودن عضو تیم</h2>
 
             <div className="space-y-4">
@@ -4949,8 +4993,14 @@ export default function Home() {
       )}
 
       {isTaskModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
-          <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl">
+        <div
+          onMouseDown={() => setIsTaskModalOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm"
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl"
+          >
             <div className="mb-6 flex items-center justify-between">
               <h2 className="text-2xl font-black">
                 {selectedTask ? `جزئیات تسک ${selectedTask.code}` : "افزودن تسک"}

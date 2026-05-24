@@ -1,4 +1,5 @@
 import {
+  answerTelegramCallbackQuery,
   buildReportEmail,
   sendReportEmail,
   sendTelegramMessage,
@@ -20,7 +21,29 @@ type TelegramUpdate = {
     chat: { id: number | string };
     text?: string;
   };
+  callback_query?: {
+    id: string;
+    data?: string;
+    message?: {
+      chat: { id: number | string };
+    };
+  };
 };
+
+const taskRegistrationKeyboard = {
+  inline_keyboard: [[{ text: "ثبت تسک", callback_data: "new_task" }]],
+};
+
+const taskRegistrationTemplate = [
+  "برای ثبت تسک، این قالب را پر کن و بفرست:",
+  "",
+  "ثبت تسک",
+  "عنوان: ",
+  "توضیح: ",
+].join("\n");
+
+const isTaskRegistrationRequest = (text: string) =>
+  /^(\/start|\/help|\/new_task|\/task|ثبت\s*تسک)$/i.test(text.trim());
 
 const verifySecret = (request: Request) => {
   const expected = process.env.TELEGRAM_WEBHOOK_SECRET;
@@ -43,12 +66,42 @@ export async function POST(request: Request) {
 
   try {
     const update = (await request.json()) as TelegramUpdate;
+    const callback = update.callback_query;
+
+    if (callback?.data === "new_task") {
+      const callbackChatId = callback.message?.chat.id;
+
+      try {
+        await answerTelegramCallbackQuery(callback.id, "قالب ثبت تسک ارسال شد.");
+      } catch (error) {
+        console.error("Telegram callback answer error:", error);
+      }
+
+      if (callbackChatId) {
+        await sendTelegramMessage(callbackChatId, taskRegistrationTemplate, {
+          parseMode: "none",
+          replyMarkup: taskRegistrationKeyboard,
+        });
+      }
+
+      return Response.json({ ok: true, command: "new_task_callback" });
+    }
+
     const item = update.channel_post || update.message;
     const chatId = item?.chat.id;
     const text = item?.text?.trim();
 
     if (!chatId || !text) {
       return Response.json({ ok: true, ignored: true });
+    }
+
+    if (isTaskRegistrationRequest(text)) {
+      await sendTelegramMessage(chatId, taskRegistrationTemplate, {
+        parseMode: "none",
+        replyMarkup: taskRegistrationKeyboard,
+      });
+
+      return Response.json({ ok: true, command: "new_task_prompt" });
     }
 
     if (text.startsWith("/sprint_report")) {
@@ -76,7 +129,8 @@ export async function POST(request: Request) {
           chatId,
           delivery?.sent
             ? "گزارش اسپرینت ایمیل شد."
-            : "گزارش ساخته شد، ولی ایمیل مقصد یا سرویس ارسال تنظیم نشده است."
+            : "گزارش ساخته شد، ولی ایمیل مقصد یا سرویس ارسال تنظیم نشده است.",
+          { replyMarkup: taskRegistrationKeyboard }
         );
       } catch (error) {
         console.error("Telegram report reply error:", error);
@@ -87,7 +141,9 @@ export async function POST(request: Request) {
 
     const task = await createTaskFromTelegramText(text);
     try {
-      await sendTelegramMessage(chatId, `تسک ساخته شد: ${task.code}\n${task.title}`);
+      await sendTelegramMessage(chatId, `تسک ساخته شد: ${task.code}\n${task.title}`, {
+        replyMarkup: taskRegistrationKeyboard,
+      });
     } catch (error) {
       console.error("Telegram task reply error:", error);
     }

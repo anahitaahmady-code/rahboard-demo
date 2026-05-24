@@ -506,7 +506,32 @@ export function parseTelegramTaskText(text: string) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  const titleLine = lines[0] || "Telegram task";
+  const isTaskForm = /^(\/?new_task|\/?task|ثبت\s*تسک)$/i.test(lines[0] || "");
+  const readField = (labels: string[]) => {
+    const labelPattern = labels
+      .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("|");
+    const fieldRegex = new RegExp(`^(${labelPattern})\\s*[:：-]\\s*(.*)$`, "i");
+    const matchIndex = lines.findIndex((line) => fieldRegex.test(line));
+
+    if (matchIndex === -1) return "";
+
+    const firstValue = lines[matchIndex].replace(fieldRegex, "$2").trim();
+    const followingLines: string[] = [];
+
+    for (const line of lines.slice(matchIndex + 1)) {
+      if (/^(title|عنوان|تایتل|description|desc|توضیح|توضیحات)\s*[:：-]/i.test(line)) {
+        break;
+      }
+
+      followingLines.push(line);
+    }
+
+    return [firstValue, ...followingLines].filter(Boolean).join("\n").trim();
+  };
+  const formTitle = readField(["title", "عنوان", "تایتل"]);
+  const formDescription = readField(["description", "desc", "توضیح", "توضیحات"]);
+  const titleLine = formTitle || (isTaskForm ? "Telegram task" : lines[0] || "Telegram task");
   const labels = Array.from(text.matchAll(/#([\p{L}\p{N}_-]+)/gu)).map(
     (match) => match[1]
   );
@@ -534,7 +559,18 @@ export function parseTelegramTaskText(text: string) {
 
   return {
     title: titleLine.replace(/^[-*]\s*/, ""),
-    description: lines.slice(1).join("\n") || text,
+    description:
+      formDescription ||
+      (isTaskForm
+        ? lines
+            .slice(1)
+            .filter(
+              (line) =>
+                !/^(title|عنوان|تایتل|description|desc|توضیح|توضیحات)\s*[:：-]/i.test(line)
+            )
+            .join("\n")
+        : lines.slice(1).join("\n")) ||
+      (isTaskForm ? "" : text),
     deadline: deadlineMatch?.[1] || "",
     labels,
     priority,

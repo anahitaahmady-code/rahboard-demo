@@ -145,25 +145,70 @@ export async function buildReportEmail(report: SprintReport) {
   return { subject, text, narrative };
 }
 
-export async function sendTelegramMessage(chatId: number | string, text: string) {
+type TelegramMessageOptions = {
+  replyMarkup?: Record<string, unknown>;
+  parseMode?: "Markdown" | "HTML" | "none";
+};
+
+export async function sendTelegramMessage(
+  chatId: number | string,
+  text: string,
+  options: TelegramMessageOptions = {}
+) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2500);
+  const body: Record<string, unknown> = {
+    chat_id: chatId,
+    text,
+  };
+
+  if (options.parseMode !== "none") {
+    body.parse_mode = options.parseMode || "Markdown";
+  }
+
+  if (options.replyMarkup) {
+    body.reply_markup = options.replyMarkup;
+  }
+
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: controller.signal,
+    body: JSON.stringify(body),
+  }).finally(() => clearTimeout(timeout));
+
+  if (!response.ok) {
+    throw new Error(`Telegram sendMessage failed with ${response.status}`);
+  }
+}
+
+export async function answerTelegramCallbackQuery(
+  callbackQueryId: string,
+  text?: string
+) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) return;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2500);
 
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    signal: controller.signal,
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: "Markdown",
-    }),
-  }).finally(() => clearTimeout(timeout));
+  const response = await fetch(
+    `https://api.telegram.org/bot${token}/answerCallbackQuery`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        callback_query_id: callbackQueryId,
+        text,
+      }),
+    }
+  ).finally(() => clearTimeout(timeout));
 
   if (!response.ok) {
-    throw new Error(`Telegram sendMessage failed with ${response.status}`);
+    throw new Error(`Telegram answerCallbackQuery failed with ${response.status}`);
   }
 }
