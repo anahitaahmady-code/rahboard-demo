@@ -35,8 +35,25 @@ export type WorkLog = {
   startedAt?: string;
   endedAt?: string;
   durationMs?: number;
+  activeMinutes?: number;
+  idleMinutes?: number;
+  evidenceCount?: number;
+  confidenceScore?: number;
+  reviewFlags?: string[];
   loggedAt: string;
   createdAt: number;
+};
+
+export type WorkEvidence = {
+  id: number;
+  taskId: number;
+  userId: number;
+  userName?: string;
+  type: "status" | "comment" | "attachment" | "deadline" | "field" | "link";
+  title: string;
+  detail?: string;
+  url?: string;
+  createdAt: string;
 };
 
 export type DeadlineChange = {
@@ -89,6 +106,7 @@ export type BasicTask = {
   completedAt?: string;
   deadlineHistory?: DeadlineChange[];
   workLogs?: WorkLog[];
+  evidence?: WorkEvidence[];
   labels?: string[];
   source?: string;
 };
@@ -119,6 +137,7 @@ export type SprintReport = {
     productiveMinutes: number;
     nonWorkMinutes: number;
     manualRatio: number;
+    averageConfidence: number;
     reviewFlags: string[];
     tasks: Array<{
       code: string;
@@ -280,6 +299,17 @@ export function buildSprintReport({
       const manualRatio = loggedMinutes
         ? Math.round((manualMinutes / loggedMinutes) * 100)
         : 0;
+      const scoredLogs = userTaskLogs.filter(
+        (item) => typeof item.log.confidenceScore === "number"
+      );
+      const averageConfidence = scoredLogs.length
+        ? Math.round(
+            scoredLogs.reduce(
+              (sum, item) => sum + Number(item.log.confidenceScore || 0),
+              0
+            ) / scoredLogs.length
+          )
+        : 0;
       const reviewFlags = [
         manualMinutes >= 180 && manualRatio >= 70
           ? "Manual logs are high compared with timed sessions."
@@ -289,6 +319,9 @@ export function buildSprintReport({
           : "",
         loggedMinutes > 0 && productiveMinutes === 0
           ? "No daily activity evidence was recorded."
+          : "",
+        scoredLogs.some((item) => Number(item.log.confidenceScore || 0) < 45)
+          ? "One or more work logs have low evidence confidence."
           : "",
       ].filter(Boolean);
 
@@ -312,6 +345,7 @@ export function buildSprintReport({
         productiveMinutes,
         nonWorkMinutes,
         manualRatio,
+        averageConfidence,
         reviewFlags,
         tasks: taskSummaries,
       };
@@ -400,7 +434,7 @@ export function formatSprintReportMarkdown(report: SprintReport, aiNarrative?: s
           const flags = item.reviewFlags.length
             ? ` Review: ${item.reviewFlags.join(" ")}`
             : "";
-          return `- ${item.userName}: ${item.doneCount}/${item.taskCount} tasks done, ${hours}h logged (${timerHours}h timer, ${manualHours}h manual), ${productive}h productive activity, ${nonWork}h break/non-work.${flags}`;
+          return `- ${item.userName}: ${item.doneCount}/${item.taskCount} tasks done, ${hours}h logged (${timerHours}h timer, ${manualHours}h manual), confidence ${item.averageConfidence || "n/a"}, ${productive}h productive activity, ${nonWork}h break/non-work.${flags}`;
         })
         .join("\n")
     : "- No developer work logs were recorded.";

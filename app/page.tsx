@@ -8,6 +8,7 @@ import {
   formatSprintReportMarkdown,
   type DeadlineChange,
   type TeamActivityLog,
+  type WorkEvidence,
   type WorkLog,
 } from "./lib/reporting";
 import {
@@ -137,6 +138,7 @@ type Task = {
   completedAt?: string;
   deadlineHistory?: DeadlineChange[];
   workLogs?: WorkLog[];
+  evidence?: WorkEvidence[];
   shiftNeed?: ShiftNeed;
   autoAssigned?: boolean;
   assignmentReason?: string;
@@ -388,6 +390,10 @@ type ImportPreviewRow = {
   estimatedHours: number;
 };
 
+let localIdCounter = 0;
+const currentTimeMs = () => new Date().getTime();
+const nextLocalId = () => currentTimeMs() + (localIdCounter++ % 1000);
+
 export default function Home() {
   const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -523,6 +529,10 @@ export default function Home() {
   const [activityNote, setActivityNote] = useState("");
   const [workLogHours, setWorkLogHours] = useState(1);
   const [workLogNote, setWorkLogNote] = useState("");
+  const [workEvidenceUrl, setWorkEvidenceUrl] = useState("");
+  const [isStoppingTimer, setIsStoppingTimer] = useState(false);
+  const [timerIdleMs, setTimerIdleMs] = useState(0);
+  const [lastTimerActivityAt, setLastTimerActivityAt] = useState(() => currentTimeMs());
   const [activeWorkTimer, setActiveWorkTimer] = useState<ActiveWorkTimer | null>(() => {
     if (typeof window === "undefined") return null;
 
@@ -536,7 +546,7 @@ export default function Home() {
       return null;
     }
   });
-  const [timerNow, setTimerNow] = useState(() => Date.now());
+  const [timerNow, setTimerNow] = useState(() => currentTimeMs());
 
   const [importPreview, setImportPreview] = useState<ImportPreviewRow[]>([]);
   const [importLog, setImportLog] = useState<string[]>([]);
@@ -591,9 +601,38 @@ export default function Home() {
   useEffect(() => {
     if (!activeWorkTimer) return;
 
-    const interval = window.setInterval(() => setTimerNow(Date.now()), 1000);
+    const interval = window.setInterval(() => setTimerNow(currentTimeMs()), 1000);
     return () => window.clearInterval(interval);
   }, [activeWorkTimer]);
+
+  useEffect(() => {
+    if (!activeWorkTimer || typeof window === "undefined") return;
+
+    const markActivity = () => setLastTimerActivityAt(currentTimeMs());
+    const events = ["mousemove", "keydown", "click", "scroll", "touchstart"];
+
+    events.forEach((eventName) =>
+      window.addEventListener(eventName, markActivity, { passive: true })
+    );
+
+    return () => {
+      events.forEach((eventName) =>
+        window.removeEventListener(eventName, markActivity)
+      );
+    };
+  }, [activeWorkTimer]);
+
+  useEffect(() => {
+    if (!activeWorkTimer) return;
+
+    const interval = window.setInterval(() => {
+      if (currentTimeMs() - lastTimerActivityAt >= 5 * 60 * 1000) {
+        setTimerIdleMs((prev) => prev + 60 * 1000);
+      }
+    }, 60 * 1000);
+
+    return () => window.clearInterval(interval);
+  }, [activeWorkTimer, lastTimerActivityAt]);
 
   useEffect(() => {
     if (appUser) {
@@ -652,7 +691,7 @@ export default function Home() {
     if (!workDate) return;
 
     const newItem: WorkSchedule = {
-      id: Date.now(),
+      id: nextLocalId(),
       userId: currentUser.id,
       date: workDate,
       isOff: workIsOff,
@@ -805,6 +844,7 @@ export default function Home() {
           source: data.source || "manual",
           deadlineHistory: data.deadlineHistory || [],
           workLogs: data.workLogs || [],
+          evidence: data.evidence || [],
         };
       });
       setTasks(firebaseTasks);
@@ -1018,12 +1058,12 @@ export default function Home() {
       .filter(Boolean);
 
     const newUser: User = {
-      id: Date.now(),
+      id: nextLocalId(),
       name,
       email,
       role: newUserRole,
       avatar: makeAvatar(name),
-      createdAt: Date.now(),
+      createdAt: currentTimeMs(),
       skills,
       shift: newUserShift,
       capacity: newUserCapacity,
@@ -1154,10 +1194,10 @@ export default function Home() {
       }
 
       const newProject: Project = {
-        id: Date.now(),
+        id: nextLocalId(),
         name,
         key,
-        createdAt: Date.now(),
+        createdAt: currentTimeMs(),
       };
 
       await setDoc(doc(db, "projects", String(newProject.id)), newProject);
@@ -1224,6 +1264,7 @@ export default function Home() {
     setCommentText("");
     setWorkLogHours(1);
     setWorkLogNote("");
+    setWorkEvidenceUrl("");
     setIsTaskModalOpen(true);
   };
 
@@ -1245,6 +1286,7 @@ export default function Home() {
     setCommentText("");
     setWorkLogHours(1);
     setWorkLogNote("");
+    setWorkEvidenceUrl("");
     setIsTaskModalOpen(true);
   };
 
@@ -1296,7 +1338,7 @@ export default function Home() {
             ? [
                 ...(currentTask.deadlineHistory || []),
                 {
-                  id: Date.now(),
+                  id: nextLocalId(),
                   taskId: currentTask.id,
                   previousDeadline: currentTask.deadline || "",
                   nextDeadline: deadline || "",
@@ -1307,6 +1349,32 @@ export default function Home() {
                 },
               ]
             : currentTask.deadlineHistory || [];
+        const deadlineEvidence =
+          currentTask.deadline !== deadline
+            ? [
+                createTaskEvidence(
+                  currentTask,
+                  "deadline",
+                  "Deadline changed",
+                  `${currentTask.deadline || "-"} -> ${deadline || "-"}`
+                ),
+              ]
+            : [];
+        const fieldEvidence =
+          currentTask.title !== title ||
+          currentTask.description !== description ||
+          currentTask.assigneeId !== assigneeId ||
+          currentTask.priority !== priority ||
+          currentTask.sprintId !== taskSprintId
+            ? [
+                createTaskEvidence(
+                  currentTask,
+                  "field",
+                  "Task details updated",
+                  "Title, description, assignee, priority, or sprint changed."
+                ),
+              ]
+            : [];
 
         const updatedTask: Task = {
           ...currentTask,
@@ -1323,6 +1391,7 @@ export default function Home() {
           shiftNeed,
           sprintId: taskSprintId,
           deadlineHistory,
+          evidence: [...deadlineEvidence, ...fieldEvidence, ...(currentTask.evidence || [])],
         };
 
         await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
@@ -1330,7 +1399,7 @@ export default function Home() {
         addLog(`تسک ${updatedTask.code} ویرایش شد`);
         notify(`تسک ${updatedTask.code} آپدیت شد`);
       } else {
-        const nextId = Date.now();
+        const nextId = currentTimeMs();
         const projectKey = activeProject?.key || "RB";
 
         const newTask: Task = {
@@ -1358,6 +1427,7 @@ export default function Home() {
           source: "manual",
           deadlineHistory: [],
           workLogs: [],
+          evidence: [],
         };
 
         await setDoc(doc(db, "tasks", String(newTask.id)), newTask);
@@ -1410,10 +1480,19 @@ export default function Home() {
       comments: [
         ...currentTask.comments,
         {
-          id: Date.now(),
+          id: nextLocalId(),
           text: commentText,
           author: currentUser.name,
         },
+      ],
+      evidence: [
+        createTaskEvidence(
+          currentTask,
+          "comment",
+          "Comment added",
+          commentText.trim().slice(0, 160)
+        ),
+        ...(currentTask.evidence || []),
       ],
     };
 
@@ -1430,6 +1509,68 @@ export default function Home() {
 
   const canLogWork = (task: Task) => {
     return canEditTask(task) || task.assigneeId === currentUser.id;
+  };
+
+  const createTaskEvidence = (
+    task: Task,
+    type: WorkEvidence["type"],
+    title: string,
+    detail?: string,
+    url?: string
+  ): WorkEvidence => ({
+    id: nextLocalId(),
+    taskId: task.id,
+    userId: currentUser.id,
+    userName: currentUser.name,
+    type,
+    title,
+    detail,
+    url,
+    createdAt: new Date().toISOString(),
+  });
+
+  const evidenceDuringTimer = (task: Task, timer: ActiveWorkTimer) =>
+    (task.evidence || []).filter((item) => {
+      const evidenceTime = new Date(item.createdAt).getTime();
+      return (
+        item.userId === timer.userId &&
+        evidenceTime >= new Date(timer.startedAt).getTime() &&
+        evidenceTime <= currentTimeMs()
+      );
+    });
+
+  const calculateWorkConfidence = ({
+    minutes,
+    idleMinutes,
+    evidenceCount,
+    source,
+  }: {
+    minutes: number;
+    idleMinutes: number;
+    evidenceCount: number;
+    source: WorkLog["source"];
+  }) => {
+    let score = source === "timer" ? 45 : 15;
+    const flags: string[] = [];
+
+    if (source === "timer") score += 15;
+    if (evidenceCount > 0) score += Math.min(30, evidenceCount * 10);
+    if (minutes >= 60 && evidenceCount === 0) {
+      score -= 25;
+      flags.push("تایمر طولانی بدون شواهد کار");
+    }
+    if (idleMinutes >= 15) {
+      score -= 20;
+      flags.push("idle طولانی داخل برنامه");
+    }
+    if (source !== "timer") {
+      flags.push("ثبت دستی و خوداظهاری");
+    }
+
+    return {
+      score: Math.max(0, Math.min(100, score)),
+      flags,
+    };
   };
 
   const formatMinutes = (minutes: number) => {
@@ -1463,7 +1604,9 @@ export default function Home() {
 
     if (activeWorkTimer?.taskId === task.id) return;
 
-    setTimerNow(Date.now());
+    setTimerNow(currentTimeMs());
+    setTimerIdleMs(0);
+    setLastTimerActivityAt(currentTimeMs());
     setActiveWorkTimer({
       taskId: task.id,
       taskCode: task.code,
@@ -1476,11 +1619,14 @@ export default function Home() {
   };
 
   const stopWorkTimer = async () => {
-    if (!activeWorkTimer) return;
+    if (!activeWorkTimer || isStoppingTimer) return;
 
-    const currentTask = tasks.find((task) => task.id === activeWorkTimer.taskId);
+    const currentTask =
+      tasks.find((task) => task.id === activeWorkTimer.taskId) ||
+      (currentSelectedTask?.id === activeWorkTimer.taskId ? currentSelectedTask : null) ||
+      (selectedTask?.id === activeWorkTimer.taskId ? selectedTask : null);
     if (!currentTask) {
-      setActiveWorkTimer(null);
+      alert("Task not found. Please refresh the board and try stopping the timer again.");
       return;
     }
 
@@ -1489,12 +1635,24 @@ export default function Home() {
       return;
     }
 
+    setIsStoppingTimer(true);
+
+    try {
     const endedAt = new Date().toISOString();
     const durationMs =
       new Date(endedAt).getTime() - new Date(activeWorkTimer.startedAt).getTime();
     const minutes = Math.max(1, Math.round(durationMs / 60000));
+    const idleMinutes = Math.min(minutes, Math.round(timerIdleMs / 60000));
+    const activeMinutes = Math.max(0, minutes - idleMinutes);
+    const timerEvidence = evidenceDuringTimer(currentTask, activeWorkTimer);
+    const confidence = calculateWorkConfidence({
+      minutes,
+      idleMinutes,
+      evidenceCount: timerEvidence.length,
+      source: "timer",
+    });
     const workLog: WorkLog = {
-      id: Date.now(),
+      id: nextLocalId(),
       taskId: currentTask.id,
       userId: activeWorkTimer.userId,
       userName: activeWorkTimer.userName,
@@ -1505,18 +1663,32 @@ export default function Home() {
       startedAt: activeWorkTimer.startedAt,
       endedAt,
       durationMs,
+      activeMinutes,
+      idleMinutes,
+      evidenceCount: timerEvidence.length,
+      confidenceScore: confidence.score,
+      reviewFlags: confidence.flags,
       loggedAt: endedAt,
-      createdAt: Date.now(),
+      createdAt: currentTimeMs(),
     };
 
-    await setDoc(doc(db, "tasks", String(currentTask.id)), {
+      await setDoc(doc(db, "tasks", String(currentTask.id)), {
       ...currentTask,
       workLogs: [workLog, ...(currentTask.workLogs || [])],
     });
 
     setActiveWorkTimer(null);
+    setTimerIdleMs(0);
+    setLastTimerActivityAt(currentTimeMs());
     setWorkLogNote("");
     notify("تایمر متوقف شد و زمان واقعی ثبت شد");
+    } catch (error) {
+      console.error("Stop work timer error:", error);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      alert(`Timer could not be saved: ${message}`);
+    } finally {
+      setIsStoppingTimer(false);
+    }
   };
 
   const addWorkLogToTask = async () => {
@@ -1532,9 +1704,15 @@ export default function Home() {
 
     const minutes = Math.round(Number(workLogHours || 0) * 60);
     if (minutes <= 0) return;
+    const confidence = calculateWorkConfidence({
+      minutes,
+      idleMinutes: 0,
+      evidenceCount: 0,
+      source: "manual",
+    });
 
     const workLog: WorkLog = {
-      id: Date.now(),
+      id: nextLocalId(),
       taskId: currentTask.id,
       userId: currentUser.id,
       userName: currentUser.name,
@@ -1542,11 +1720,17 @@ export default function Home() {
       note: workLogNote.trim(),
       source: "manual",
       verification: "self_reported",
+      activeMinutes: minutes,
+      idleMinutes: 0,
+      evidenceCount: 0,
+      confidenceScore: confidence.score,
+      reviewFlags: confidence.flags,
       loggedAt: new Date().toISOString(),
-      createdAt: Date.now(),
+      createdAt: currentTimeMs(),
     };
 
-    await setDoc(doc(db, "tasks", String(currentTask.id)), {
+    try {
+      await setDoc(doc(db, "tasks", String(currentTask.id)), {
       ...currentTask,
       workLogs: [workLog, ...(currentTask.workLogs || [])],
     });
@@ -1554,6 +1738,45 @@ export default function Home() {
     setWorkLogHours(1);
     setWorkLogNote("");
     notify("ساعت کار روی تسک ثبت شد");
+    } catch (error) {
+      console.error("Work log save error:", error);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      alert(`Work log could not be saved: ${message}`);
+    }
+  };
+
+  const addEvidenceLinkToTask = async () => {
+    if (!selectedTask || !workEvidenceUrl.trim()) return;
+
+    const currentTask =
+      tasks.find((task) => task.id === selectedTask.id) || selectedTask;
+    if (!canLogWork(currentTask)) {
+      showNoAccess();
+      return;
+    }
+
+    const evidenceUrl = workEvidenceUrl.trim();
+    const evidence = createTaskEvidence(
+      currentTask,
+      "link",
+      "لینک شاهد کار",
+      evidenceUrl,
+      evidenceUrl
+    );
+
+    try {
+      await setDoc(doc(db, "tasks", String(currentTask.id)), {
+        ...currentTask,
+        evidence: [evidence, ...(currentTask.evidence || [])],
+      });
+
+      setWorkEvidenceUrl("");
+      notify("شاهد کار ثبت شد");
+    } catch (error) {
+      console.error("Evidence save error:", error);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      alert(`Evidence could not be saved: ${message}`);
+    }
   };
 
   const saveActivityEntry = async () => {
@@ -1564,7 +1787,7 @@ export default function Home() {
       ? tasks.find((item) => item.id === Number(activityTaskId))
       : null;
     const log: TeamActivityLog = {
-      id: Date.now(),
+      id: nextLocalId(),
       userId: currentUser.id,
       userName: currentUser.name,
       taskId: task?.id || null,
@@ -1575,7 +1798,7 @@ export default function Home() {
       note: activityNote.trim(),
       date: new Date().toISOString().slice(0, 10),
       source: "manual",
-      createdAt: Date.now(),
+      createdAt: currentTimeMs(),
     };
 
     await setDoc(doc(db, "activityLogs", String(log.id)), log);
@@ -1636,7 +1859,7 @@ export default function Home() {
     if (!currentTask) return;
 
     const newFiles: Attachment[] = Array.from(files).map((file) => ({
-      id: Date.now() + Math.random(),
+      id: nextLocalId(),
       name: file.name,
       type: file.type,
       url: URL.createObjectURL(file),
@@ -1645,6 +1868,15 @@ export default function Home() {
     const updatedTask: Task = {
       ...currentTask,
       attachments: [...currentTask.attachments, ...newFiles],
+      evidence: [
+        createTaskEvidence(
+          currentTask,
+          "attachment",
+          "Attachment added",
+          newFiles.map((file) => file.name).join(", ").slice(0, 180)
+        ),
+        ...(currentTask.evidence || []),
+      ],
     };
 
     await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
@@ -1700,7 +1932,7 @@ export default function Home() {
 
     if (!sprintName.trim()) return;
 
-    const sprintId = editingSprintId || Date.now();
+    const sprintId = editingSprintId || currentTimeMs();
     const newSprint: Sprint = {
       id: sprintId,
       projectId: activeProjectId,
@@ -1710,8 +1942,8 @@ export default function Home() {
       endDate: sprintEndDate,
       status: sprintStatus,
       createdAt: editingSprintId
-        ? sprints.find((item) => item.id === editingSprintId)?.createdAt || Date.now()
-        : Date.now(),
+        ? sprints.find((item) => item.id === editingSprintId)?.createdAt || currentTimeMs()
+        : currentTimeMs(),
     };
 
     closeSprintModal();
@@ -1755,6 +1987,18 @@ export default function Home() {
     const updatedTask: Task = {
       ...task,
       sprintId,
+      evidence:
+        task.sprintId !== sprintId
+          ? [
+              createTaskEvidence(
+                task,
+                "field",
+                "Sprint changed",
+                `${task.sprintId ?? "Backlog"} -> ${sprintId ?? "Backlog"}`
+              ),
+              ...(task.evidence || []),
+            ]
+          : task.evidence || [],
     };
 
     await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
@@ -1815,7 +2059,7 @@ export default function Home() {
 
         addLog("نام ستون تغییر کرد");
       } else {
-        const key = title.toLowerCase().replace(/\s+/g, "-") + "-" + Date.now();
+        const key = title.toLowerCase().replace(/\s+/g, "-") + "-" + currentTimeMs();
 
         await setDoc(doc(db, "columns", key), {
           label: title,
@@ -1899,6 +2143,18 @@ export default function Home() {
           targetColumnKey === "done" && currentTask.status !== "done"
             ? new Date().toISOString()
             : currentTask.completedAt,
+        evidence:
+          currentTask.status !== targetColumnKey
+            ? [
+                createTaskEvidence(
+                  currentTask,
+                  "status",
+                  "Status changed",
+                  `${currentTask.status} -> ${targetColumnKey}`
+                ),
+                ...(currentTask.evidence || []),
+              ]
+            : currentTask.evidence || [],
       };
 
       await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
@@ -2034,7 +2290,7 @@ export default function Home() {
 
     if (importPreview.length === 0) return;
 
-    const now = Date.now();
+    const now = currentTimeMs();
     const writes: Promise<void>[] = [];
     const localProjects = [...projects];
     const localSprints = [...sprints];
@@ -2125,6 +2381,7 @@ export default function Home() {
         importedAt: now,
         deadlineHistory: [],
         workLogs: [],
+        evidence: [],
       };
 
       writes.push(setDoc(doc(db, "tasks", String(task.id)), task));
@@ -2261,9 +2518,12 @@ export default function Home() {
       const userLogs = tasks.flatMap((task) =>
         (task.workLogs || [])
           .filter(
-            (log) =>
-              log.userId === user.id &&
-              (log.loggedAt || log.createdAt?.toString() || "").slice(0, 10) === today
+            (log) => {
+              const loggedAt =
+                log.loggedAt ||
+                (log.createdAt ? new Date(log.createdAt).toISOString() : "");
+              return log.userId === user.id && loggedAt.slice(0, 10) === today;
+            }
           )
           .map((log) => ({ task, log }))
       );
@@ -2277,10 +2537,31 @@ export default function Home() {
       const manualRatio = totalMinutes
         ? Math.round((manualMinutes / totalMinutes) * 100)
         : 0;
+      const idleMinutes = userLogs.reduce(
+        (sum, item) => sum + Number(item.log.idleMinutes || 0),
+        0
+      );
+      const evidenceCount = userLogs.reduce(
+        (sum, item) => sum + Number(item.log.evidenceCount || 0),
+        0
+      );
+      const scoredLogs = userLogs.filter(
+        (item) => typeof item.log.confidenceScore === "number"
+      );
+      const averageConfidence = scoredLogs.length
+        ? Math.round(
+            scoredLogs.reduce(
+              (sum, item) => sum + Number(item.log.confidenceScore || 0),
+              0
+            ) / scoredLogs.length
+          )
+        : 0;
       const capacityMinutes = (user.capacity || 8) * 60;
       const needsReview =
         (manualMinutes >= 120 && manualRatio >= 70) ||
-        totalMinutes > capacityMinutes + 60;
+        totalMinutes > capacityMinutes + 60 ||
+        (averageConfidence > 0 && averageConfidence < 45) ||
+        idleMinutes >= 30;
 
       return {
         user,
@@ -2288,6 +2569,9 @@ export default function Home() {
         manualMinutes,
         totalMinutes,
         manualRatio,
+        idleMinutes,
+        evidenceCount,
+        averageConfidence,
         needsReview,
       };
     });
@@ -3801,6 +4085,8 @@ export default function Home() {
                     <table className="w-full min-w-[840px] text-right text-sm">
                       <thead className="bg-slate-50 text-xs text-slate-500">
                         <tr>
+                          <th className="p-4">اعتماد</th>
+                          <th className="p-4">Idle / شاهد</th>
                           <th className="p-4">عضو تیم</th>
                           <th className="p-4">تایمری</th>
                           <th className="p-4">دستی</th>
@@ -3811,6 +4097,10 @@ export default function Home() {
                       <tbody>
                         {workVerificationSummary.map((item) => (
                           <tr key={item.user.id} className="border-t border-slate-100">
+                            <td className="p-4">{item.averageConfidence || "n/a"}</td>
+                            <td className="p-4">
+                              {formatMinutes(item.idleMinutes)} / {item.evidenceCount}
+                            </td>
                             <td className="p-4 font-bold">{item.user.name}</td>
                             <td className="p-4 text-emerald-700">
                               {formatMinutes(item.timerMinutes)}
@@ -4658,7 +4948,7 @@ export default function Home() {
 
                       <button
                         onClick={stopWorkTimer}
-                        disabled={!activeWorkTimer}
+                        disabled={!activeWorkTimer || isStoppingTimer}
                         className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300"
                       >
                         توقف و ثبت
@@ -4693,6 +4983,25 @@ export default function Home() {
                     </div>
                   )}
 
+                  {canLogWork(currentSelectedTask) && (
+                    <div className="mb-5 grid gap-3 md:grid-cols-[1fr_auto]">
+                      <input
+                        value={workEvidenceUrl}
+                        onChange={(e) => setWorkEvidenceUrl(e.target.value)}
+                        placeholder="لینک commit / PR / deploy / سند کار"
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                      />
+
+                      <button
+                        onClick={addEvidenceLinkToTask}
+                        disabled={!workEvidenceUrl.trim()}
+                        className="rounded-2xl bg-blue-600 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300"
+                      >
+                        ثبت شاهد
+                      </button>
+                    </div>
+                  )}
+
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="rounded-2xl bg-white p-4">
                       <h4 className="mb-3 text-sm font-black text-slate-600">Work logs</h4>
@@ -4716,6 +5025,11 @@ export default function Home() {
                                 {log.source === "timer" ? "تایمری" : "دستی / خوداظهاری"}
                               </span>
                             </div>
+                            {typeof log.confidenceScore === "number" && (
+                              <div className="mt-1 text-[11px] text-slate-500">
+                                اعتماد {log.confidenceScore} · idle {formatMinutes(log.idleMinutes || 0)} · شاهد {log.evidenceCount || 0}
+                              </div>
+                            )}
                             {log.note && (
                               <div className="mt-1 text-xs text-slate-500">{log.note}</div>
                             )}
@@ -4729,7 +5043,45 @@ export default function Home() {
                     </div>
 
                     <div className="rounded-2xl bg-white p-4">
-                      <h4 className="mb-3 text-sm font-black text-slate-600">Deadline history</h4>
+                      <h4 className="mb-3 text-sm font-black text-slate-600">شواهد کار</h4>
+                      <div className="mb-4 space-y-2">
+                        {(currentSelectedTask.evidence || []).slice(0, 8).map((item) => (
+                          <div
+                            key={item.id}
+                            className="rounded-xl border border-slate-100 bg-slate-50 p-3 text-sm"
+                          >
+                            <div className="flex flex-wrap items-center gap-2 font-bold">
+                              <span>{item.type}</span>
+                              {item.url ? (
+                                <a
+                                  href={item.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-blue-600 underline-offset-2 hover:underline"
+                                >
+                                  {item.title}
+                                </a>
+                              ) : (
+                                <span>{item.title}</span>
+                              )}
+                            </div>
+                            {item.detail && (
+                              <div className="mt-1 break-words text-xs text-slate-500">
+                                {item.detail}
+                              </div>
+                            )}
+                            <div className="mt-1 text-xs text-slate-400">
+                              {item.userName || getUserName(item.userId)} · {item.createdAt.slice(0, 10)}
+                            </div>
+                          </div>
+                        ))}
+
+                        {(currentSelectedTask.evidence || []).length === 0 && (
+                          <div className="text-sm text-slate-400">هنوز شاهد کاری ثبت نشده است.</div>
+                        )}
+                      </div>
+
+                      <h4 className="mb-3 border-t border-slate-100 pt-4 text-sm font-black text-slate-600">Deadline history</h4>
                       <div className="space-y-2">
                         {(currentSelectedTask.deadlineHistory || []).map((item) => (
                           <div

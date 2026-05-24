@@ -129,6 +129,7 @@ export async function createTaskFromTelegramText(text: string) {
     importedAt: now,
     workLogs: [],
     deadlineHistory: [],
+    evidence: [],
   };
 
   await Promise.all([
