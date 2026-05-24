@@ -85,6 +85,23 @@ type ActiveWorkTimer = {
   startedAt: string;
 };
 
+type WorkEvidenceDraft = {
+  id: number;
+  url: string;
+  note: string;
+};
+
+type ActiveLinkWorkSession = {
+  taskId: number;
+  taskCode: string;
+  taskTitle: string;
+  userId: number;
+  userName: string;
+  url: string;
+  note: string;
+  startedAt: string;
+};
+
 type User = {
   id: number;
   uid?: string;
@@ -546,7 +563,9 @@ export default function Home() {
   const [activityNote, setActivityNote] = useState("");
   const [workLogHours, setWorkLogHours] = useState(1);
   const [workLogNote, setWorkLogNote] = useState("");
-  const [workEvidenceUrl, setWorkEvidenceUrl] = useState("");
+  const [workEvidenceDrafts, setWorkEvidenceDrafts] = useState<WorkEvidenceDraft[]>([
+    { id: 1, url: "", note: "" },
+  ]);
   const [isStoppingTimer, setIsStoppingTimer] = useState(false);
   const [timerIdleMs, setTimerIdleMs] = useState(0);
   const [lastTimerActivityAt, setLastTimerActivityAt] = useState(() => currentTimeMs());
@@ -564,6 +583,21 @@ export default function Home() {
     }
   });
   const [timerNow, setTimerNow] = useState(() => currentTimeMs());
+  const [activeLinkWorkSession, setActiveLinkWorkSession] =
+    useState<ActiveLinkWorkSession | null>(() => {
+      if (typeof window === "undefined") return null;
+
+      const saved = window.localStorage.getItem("rahboard-active-link-work-session");
+      if (!saved) return null;
+
+      try {
+        return JSON.parse(saved) as ActiveLinkWorkSession;
+      } catch (error) {
+        console.error("Link work session load error:", error);
+        return null;
+      }
+    });
+  const [linkSessionNow, setLinkSessionNow] = useState(() => currentTimeMs());
 
   const [importPreview, setImportPreview] = useState<ImportPreviewRow[]>([]);
   const [importLog, setImportLog] = useState<string[]>([]);
@@ -616,11 +650,32 @@ export default function Home() {
   }, [activeWorkTimer]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    if (activeLinkWorkSession) {
+      window.localStorage.setItem(
+        "rahboard-active-link-work-session",
+        JSON.stringify(activeLinkWorkSession)
+      );
+      return;
+    }
+
+    window.localStorage.removeItem("rahboard-active-link-work-session");
+  }, [activeLinkWorkSession]);
+
+  useEffect(() => {
     if (!activeWorkTimer) return;
 
     const interval = window.setInterval(() => setTimerNow(currentTimeMs()), 1000);
     return () => window.clearInterval(interval);
   }, [activeWorkTimer]);
+
+  useEffect(() => {
+    if (!activeLinkWorkSession) return;
+
+    const interval = window.setInterval(() => setLinkSessionNow(currentTimeMs()), 1000);
+    return () => window.clearInterval(interval);
+  }, [activeLinkWorkSession]);
 
   useEffect(() => {
     if (!activeWorkTimer || typeof window === "undefined") return;
@@ -695,6 +750,9 @@ export default function Home() {
 
   const saveTaskDocument = (task: Task) =>
     setDoc(doc(db, "tasks", String(task.id)), stripUndefined(task));
+
+  const saveActivityLogDocument = (log: TeamActivityLog) =>
+    setDoc(doc(db, "activityLogs", String(log.id)), stripUndefined(log));
 
   const openWorkScheduleModal = () => {
     const today = new Date().toISOString().slice(0, 10);
@@ -1284,7 +1342,7 @@ export default function Home() {
     setCommentText("");
     setWorkLogHours(1);
     setWorkLogNote("");
-    setWorkEvidenceUrl("");
+    resetWorkEvidenceDrafts();
     setIsTaskModalOpen(true);
   };
 
@@ -1306,7 +1364,7 @@ export default function Home() {
     setCommentText("");
     setWorkLogHours(1);
     setWorkLogNote("");
-    setWorkEvidenceUrl("");
+    resetWorkEvidenceDrafts();
     setIsTaskModalOpen(true);
   };
 
@@ -1531,6 +1589,41 @@ export default function Home() {
     return canEditTask(task) || task.assigneeId === currentUser.id;
   };
 
+  const resetWorkEvidenceDrafts = () => {
+    setWorkEvidenceDrafts([{ id: 1, url: "", note: "" }]);
+  };
+
+  const updateWorkEvidenceDraft = (
+    id: number,
+    field: keyof Pick<WorkEvidenceDraft, "url" | "note">,
+    value: string
+  ) => {
+    setWorkEvidenceDrafts((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, [field]: value } : item))
+    );
+  };
+
+  const addWorkEvidenceDraft = () => {
+    setWorkEvidenceDrafts((prev) => [
+      ...prev,
+      { id: nextLocalId(), url: "", note: "" },
+    ]);
+  };
+
+  const removeWorkEvidenceDraft = (id: number) => {
+    setWorkEvidenceDrafts((prev) =>
+      prev.length === 1
+        ? [{ id: 1, url: "", note: "" }]
+        : prev.filter((item) => item.id !== id)
+    );
+  };
+
+  const clearWorkEvidenceDraft = (id: number) => {
+    setWorkEvidenceDrafts((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, url: "", note: "" } : item))
+    );
+  };
+
   const createTaskEvidence = (
     task: Task,
     type: WorkEvidence["type"],
@@ -1618,6 +1711,14 @@ export default function Home() {
     return Math.max(
       0,
       Math.floor((timerNow - new Date(timer.startedAt).getTime()) / 60000)
+    );
+  };
+
+  const getLinkSessionElapsedMinutes = (session: ActiveLinkWorkSession | null) => {
+    if (!session) return 0;
+    return Math.max(
+      0,
+      Math.floor((linkSessionNow - new Date(session.startedAt).getTime()) / 60000)
     );
   };
 
@@ -1785,22 +1886,23 @@ export default function Home() {
     }
   };
 
-  const addEvidenceLinkToTask = async () => {
-    if (!selectedTask || !workEvidenceUrl.trim()) return;
+  const saveEvidenceDraftToTask = async (draft: WorkEvidenceDraft) => {
+    if (!selectedTask || !draft.url.trim()) return null;
 
     const currentTask =
       tasks.find((task) => task.id === selectedTask.id) || selectedTask;
     if (!canLogWork(currentTask)) {
       showNoAccess();
-      return;
+      return null;
     }
 
-    const evidenceUrl = workEvidenceUrl.trim();
+    const evidenceUrl = draft.url.trim();
+    const evidenceNote = draft.note.trim();
     const evidence = createTaskEvidence(
       currentTask,
       "link",
-      "لینک شاهد کار",
-      evidenceUrl,
+      evidenceNote || "لینک شاهد کار",
+      evidenceNote || evidenceUrl,
       evidenceUrl
     );
 
@@ -1816,12 +1918,130 @@ export default function Home() {
         prev.map((task) => (task.id === updatedTask.id ? updatedTask : task))
       );
       setSelectedTask((prev) => (prev?.id === updatedTask.id ? updatedTask : prev));
-      setWorkEvidenceUrl("");
+      clearWorkEvidenceDraft(draft.id);
       notify("شاهد کار ثبت شد");
+      return { task: updatedTask, evidence };
     } catch (error) {
       console.error("Evidence save error:", error);
       const message = error instanceof Error ? error.message : "Unknown error";
       alert(`Evidence could not be saved: ${message}`);
+      return null;
+    }
+  };
+
+  const startLinkWorkSession = async (draft: WorkEvidenceDraft) => {
+    if (!selectedTask || !draft.url.trim()) return;
+
+    if (activeLinkWorkSession) {
+      notify("اول کار فعال روی لینک قبلی را پایان بده");
+      return;
+    }
+
+    const evidenceUrl = draft.url.trim();
+    if (typeof window !== "undefined") {
+      window.open(evidenceUrl, "_blank", "noopener,noreferrer");
+    }
+
+    const result = await saveEvidenceDraftToTask(draft);
+    if (!result) return;
+
+    const startedAt = new Date().toISOString();
+    setLinkSessionNow(currentTimeMs());
+    setActiveLinkWorkSession({
+      taskId: result.task.id,
+      taskCode: result.task.code,
+      taskTitle: result.task.title,
+      userId: currentUser.id,
+      userName: currentUser.name,
+      url: evidenceUrl,
+      note: draft.note.trim(),
+      startedAt,
+    });
+    notify("کار روی لینک شروع شد");
+  };
+
+  const finishLinkWorkSession = async () => {
+    if (!activeLinkWorkSession) return;
+
+    const currentTask =
+      tasks.find((task) => task.id === activeLinkWorkSession.taskId) ||
+      (currentSelectedTask?.id === activeLinkWorkSession.taskId
+        ? currentSelectedTask
+        : null);
+
+    if (!currentTask) {
+      alert("Task not found. Please refresh the board and try again.");
+      return;
+    }
+
+    const endedAt = new Date().toISOString();
+    const durationMs =
+      new Date(endedAt).getTime() - new Date(activeLinkWorkSession.startedAt).getTime();
+    const minutes = Math.max(1, Math.round(durationMs / 60000));
+    const sessionNote =
+      activeLinkWorkSession.note || `کار روی لینک ${activeLinkWorkSession.url}`;
+    const linkEvidenceCount = Math.max(
+      1,
+      (currentTask.evidence || []).filter(
+        (item) => item.type === "link" && item.url === activeLinkWorkSession.url
+      ).length
+    );
+    const confidence = calculateWorkConfidence({
+      minutes,
+      idleMinutes: 0,
+      evidenceCount: linkEvidenceCount,
+      source: "timer",
+    });
+    const workLog: WorkLog = {
+      id: nextLocalId(),
+      taskId: currentTask.id,
+      userId: activeLinkWorkSession.userId,
+      userName: activeLinkWorkSession.userName,
+      minutes,
+      note: sessionNote,
+      source: "timer",
+      verification: "timed",
+      startedAt: activeLinkWorkSession.startedAt,
+      endedAt,
+      durationMs,
+      activeMinutes: minutes,
+      idleMinutes: 0,
+      evidenceCount: linkEvidenceCount,
+      confidenceScore: confidence.score,
+      reviewFlags: confidence.flags,
+      loggedAt: endedAt,
+      createdAt: currentTimeMs(),
+    };
+    const activityLog: TeamActivityLog = {
+      id: nextLocalId(),
+      userId: activeLinkWorkSession.userId,
+      userName: activeLinkWorkSession.userName,
+      taskId: currentTask.id,
+      taskCode: currentTask.code,
+      taskTitle: currentTask.title,
+      category: "focus",
+      minutes,
+      note: `${sessionNote} | ${activeLinkWorkSession.url}`,
+      date: new Date().toISOString().slice(0, 10),
+      source: "agent",
+      createdAt: currentTimeMs(),
+    };
+
+    try {
+      await Promise.all([
+        saveTaskDocument({
+          ...currentTask,
+          workLogs: [workLog, ...(currentTask.workLogs || [])],
+        }),
+        saveActivityLogDocument(activityLog),
+      ]);
+
+      setActiveLinkWorkSession(null);
+      notify(`${formatMinutes(minutes)} کار روی لینک ثبت شد`);
+    } catch (error) {
+      console.error("Link work session save error:", error);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      alert(`Link work session could not be saved: ${message}`);
     }
   };
 
@@ -1847,7 +2067,7 @@ export default function Home() {
       createdAt: currentTimeMs(),
     };
 
-    await setDoc(doc(db, "activityLogs", String(log.id)), log);
+    await saveActivityLogDocument(log);
     setActivityNote("");
     setActivityTaskId("");
     notify("گزارش فعالیت روزانه ثبت شد");
@@ -4981,6 +5201,25 @@ export default function Home() {
                     </div>
                   )}
 
+                  {activeLinkWorkSession && (
+                    <div className="mb-5 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm leading-7 text-blue-800">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <span>
+                          کار روی لینک: {activeLinkWorkSession.taskCode} - {formatMinutes(getLinkSessionElapsedMinutes(activeLinkWorkSession))}
+                        </span>
+                        <button
+                          onClick={finishLinkWorkSession}
+                          className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-black text-white"
+                        >
+                          پایان و ثبت
+                        </button>
+                      </div>
+                      <div className="mt-2 break-words text-xs text-blue-700">
+                        {activeLinkWorkSession.note || activeLinkWorkSession.url}
+                      </div>
+                    </div>
+                  )}
+
                   {canLogWork(currentSelectedTask) && (
                     <div className="mb-5 grid gap-3 md:grid-cols-[1fr_auto_auto]">
                       <input
@@ -5036,21 +5275,59 @@ export default function Home() {
                   )}
 
                   {canLogWork(currentSelectedTask) && (
-                    <div className="mb-5 grid gap-3 md:grid-cols-[1fr_auto]">
-                      <input
-                        value={workEvidenceUrl}
-                        onChange={(e) => setWorkEvidenceUrl(e.target.value)}
-                        placeholder="لینک commit / PR / deploy / سند کار"
-                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
-                      />
+                    <div className="mb-5 space-y-3">
+                      {workEvidenceDrafts.map((draft, index) => (
+                        <div
+                          key={draft.id}
+                          className="grid gap-3 md:grid-cols-[1fr_1.3fr_auto_auto_auto]"
+                        >
+                          <input
+                            value={draft.note}
+                            onChange={(e) =>
+                              updateWorkEvidenceDraft(draft.id, "note", e.target.value)
+                            }
+                            placeholder="چه کاری انجام شد؟"
+                            className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                          />
+                          <input
+                            value={draft.url}
+                            onChange={(e) =>
+                              updateWorkEvidenceDraft(draft.id, "url", e.target.value)
+                            }
+                            placeholder="لینک commit / PR / deploy / سند کار"
+                            className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                          />
 
-                      <button
-                        onClick={addEvidenceLinkToTask}
-                        disabled={!workEvidenceUrl.trim()}
-                        className="rounded-2xl bg-blue-600 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300"
-                      >
-                        ثبت شاهد
-                      </button>
+                          <button
+                            onClick={() => saveEvidenceDraftToTask(draft)}
+                            disabled={!draft.url.trim()}
+                            className="rounded-2xl bg-blue-600 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300"
+                          >
+                            ثبت شاهد
+                          </button>
+
+                          <button
+                            onClick={() => startLinkWorkSession(draft)}
+                            disabled={!draft.url.trim() || Boolean(activeLinkWorkSession)}
+                            className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300"
+                          >
+                            شروع لینک
+                          </button>
+
+                          <button
+                            onClick={
+                              index === 0
+                                ? addWorkEvidenceDraft
+                                : () => removeWorkEvidenceDraft(draft.id)
+                            }
+                            className="h-12 w-12 rounded-2xl border border-slate-200 bg-white text-xl font-black text-slate-700"
+                            aria-label={index === 0 ? "افزودن شاهد" : "حذف شاهد"}
+                            title={index === 0 ? "افزودن شاهد" : "حذف شاهد"}
+                          >
+                            {index === 0 ? "+" : "×"}
+                          </button>
+                        </div>
+                      ))}
                     </div>
                   )}
 
@@ -5091,6 +5368,29 @@ export default function Home() {
                         {(currentSelectedTask.workLogs || []).length === 0 && (
                           <div className="text-sm text-slate-400">هنوز ساعتی ثبت نشده است.</div>
                         )}
+
+                        {teamActivityLogs
+                          .filter(
+                            (log) =>
+                              log.taskId === currentSelectedTask.id &&
+                              log.source === "agent"
+                          )
+                          .slice(0, 6)
+                          .map((log) => (
+                            <div
+                              key={log.id}
+                              className="rounded-xl border border-blue-100 bg-blue-50 p-3 text-sm text-blue-800"
+                            >
+                              <div className="font-bold">
+                                {formatMinutes(log.minutes)} فعالیت لینک
+                              </div>
+                              {log.note && (
+                                <div className="mt-1 break-words text-xs text-blue-700">
+                                  {log.note}
+                                </div>
+                              )}
+                            </div>
+                          ))}
                       </div>
                     </div>
 
