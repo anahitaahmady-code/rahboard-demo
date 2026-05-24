@@ -6,7 +6,9 @@ import {
 } from "@/app/lib/integrations";
 import {
   createTaskFromTelegramText,
+  loadTelegramPendingGroupMessage,
   loadRahboardData,
+  saveTelegramPendingGroupMessage,
 } from "@/app/lib/rahboard-store";
 import { buildSprintReport } from "@/app/lib/reporting";
 
@@ -23,6 +25,8 @@ type TelegramUpdate = {
 };
 
 type TelegramMessage = {
+  message_id?: number;
+  message_thread_id?: number;
   chat: {
     id: number | string;
     type?: "private" | "group" | "supergroup" | "channel";
@@ -100,6 +104,44 @@ const extractApprovedTaskText = (message: TelegramMessage, text: string) => {
   return replyText || cleanedText;
 };
 
+const getTelegramSenderName = (message: TelegramMessage) =>
+  [message.from?.first_name, message.from?.last_name].filter(Boolean).join(" ") ||
+  message.from?.username ||
+  "";
+
+const rememberGroupMessage = async (message: TelegramMessage, text: string) => {
+  if (!isGroupChat(message) || approvalPattern.test(text)) return;
+  if (text.startsWith("/")) return;
+
+  try {
+    await saveTelegramPendingGroupMessage({
+      chatId: String(message.chat.id),
+      threadId: String(message.message_thread_id || 0),
+      messageId: message.message_id || null,
+      text,
+      fromId: message.from?.id ? String(message.from.id) : "",
+      fromName: getTelegramSenderName(message),
+      createdAt: Date.now(),
+    });
+  } catch (error) {
+    console.error("Telegram pending group message save error:", error);
+  }
+};
+
+const loadFallbackApprovedTaskText = async (message: TelegramMessage) => {
+  try {
+    const pending = await loadTelegramPendingGroupMessage(
+      message.chat.id,
+      message.message_thread_id || 0
+    );
+
+    return pending?.text?.trim() || "";
+  } catch (error) {
+    console.error("Telegram pending group message load error:", error);
+    return "";
+  }
+};
+
 const missingReplyTextMessage = (message: TelegramMessage) => {
   const hasReply = Boolean(message.reply_to_message);
   const hasQuote = Boolean(message.quote?.text || message.external_reply?.quote?.text);
@@ -108,6 +150,7 @@ const missingReplyTextMessage = (message: TelegramMessage) => {
     "متن پیام ریپلای‌شده به بات نرسید، برای همین نمی‌توانم از روی ریپلای تسک بسازم.",
     `reply=${hasReply ? "yes" : "no"} quote=${hasQuote ? "yes" : "no"}`,
     "در BotFather برای این بات Privacy Mode را خاموش کن: /setprivacy -> انتخاب بات -> Disable",
+    "اگر همین الان Privacy را خاموش کردی، یک پیام مشکل جدید بفرست و روی همان پیام جدید Reply کن؛ پیام‌های قدیمی قبلاً به بات نرسیده‌اند.",
     "بعد دوباره روی پیام مشکل Reply بزن و /approve_task را بفرست.",
   ].join("\n");
 };
@@ -223,6 +266,7 @@ export async function POST(request: Request) {
 
     if (isGroupChat(item)) {
       if (!approvalPattern.test(text)) {
+        await rememberGroupMessage(item, text);
         return Response.json({ ok: true, ignored: "group_message_without_task_approval" });
       }
 
@@ -235,7 +279,8 @@ export async function POST(request: Request) {
         return Response.json({ ok: true, ignored: "unauthorized_task_approver" });
       }
 
-      const approvedTaskText = extractApprovedTaskText(item, text);
+      const approvedTaskText =
+        extractApprovedTaskText(item, text) || (await loadFallbackApprovedTaskText(item));
 
       if (!approvedTaskText) {
         await sendTelegramMessage(

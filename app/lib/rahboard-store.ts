@@ -1,5 +1,7 @@
 import {
   collection,
+  doc,
+  getDoc,
   getDocs,
   orderBy,
   query,
@@ -72,6 +74,52 @@ const saveDocumentWithRestApi = async (
     );
   }
 };
+
+export type TelegramPendingGroupMessage = {
+  id: string;
+  chatId: string;
+  threadId: string;
+  messageId: number | null;
+  text: string;
+  fromId: string;
+  fromName: string;
+  createdAt: number;
+};
+
+const telegramPendingMessageId = (chatId: number | string, threadId?: number | string | null) =>
+  `${String(chatId)}_${String(threadId || 0)}`;
+
+export async function saveTelegramPendingGroupMessage(
+  message: Omit<TelegramPendingGroupMessage, "id">
+) {
+  const id = telegramPendingMessageId(message.chatId, message.threadId);
+
+  await saveDocumentWithRestApi("telegramPendingGroupMessages", id, {
+    id,
+    ...message,
+  });
+}
+
+export async function loadTelegramPendingGroupMessage(
+  chatId: number | string,
+  threadId?: number | string | null
+) {
+  const id = telegramPendingMessageId(chatId, threadId);
+  const snapshot = await getDoc(doc(serverDb, "telegramPendingGroupMessages", id));
+
+  if (!snapshot.exists()) return null;
+
+  const data = snapshot.data() as TelegramPendingGroupMessage;
+  const maxAgeMs = 30 * 60 * 1000;
+
+  if (!data.text || currentTimeMs() - Number(data.createdAt || 0) > maxAgeMs) {
+    return null;
+  }
+
+  return data;
+}
+
+const currentTimeMs = () => Date.now();
 
 export async function loadRahboardData() {
   const [usersSnapshot, projectsSnapshot, sprintsSnapshot, tasksSnapshot, logsSnapshot] =
