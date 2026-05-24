@@ -393,6 +393,23 @@ type ImportPreviewRow = {
 let localIdCounter = 0;
 const currentTimeMs = () => new Date().getTime();
 const nextLocalId = () => currentTimeMs() + (localIdCounter++ % 1000);
+const stripUndefined = <T,>(value: T): T => {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => stripUndefined(item))
+      .filter((item) => item !== undefined) as T;
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, item]) => item !== undefined)
+        .map(([key, item]) => [key, stripUndefined(item)])
+    ) as T;
+  }
+
+  return value;
+};
 
 export default function Home() {
   const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
@@ -675,6 +692,9 @@ export default function Home() {
     notify("شما دسترسی انجام این عملیات را ندارید");
   };
 
+
+  const saveTaskDocument = (task: Task) =>
+    setDoc(doc(db, "tasks", String(task.id)), stripUndefined(task));
 
   const openWorkScheduleModal = () => {
     const today = new Date().toISOString().slice(0, 10);
@@ -1394,7 +1414,7 @@ export default function Home() {
           evidence: [...deadlineEvidence, ...fieldEvidence, ...(currentTask.evidence || [])],
         };
 
-        await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
+        await saveTaskDocument(updatedTask);
 
         addLog(`تسک ${updatedTask.code} ویرایش شد`);
         notify(`تسک ${updatedTask.code} آپدیت شد`);
@@ -1430,7 +1450,7 @@ export default function Home() {
           evidence: [],
         };
 
-        await setDoc(doc(db, "tasks", String(newTask.id)), newTask);
+        await saveTaskDocument(newTask);
 
         addLog(`تسک ${newTask.code} ساخته شد`);
         notify(autoAssigned ? `تسک جدید ساخته شد و خودکار اساین شد` : "تسک جدید ساخته شد");
@@ -1496,7 +1516,7 @@ export default function Home() {
       ],
     };
 
-    await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
+    await saveTaskDocument(updatedTask);
 
     addLog(`کامنت جدید روی ${updatedTask.code} ثبت شد`);
 
@@ -1517,17 +1537,22 @@ export default function Home() {
     title: string,
     detail?: string,
     url?: string
-  ): WorkEvidence => ({
-    id: nextLocalId(),
-    taskId: task.id,
-    userId: currentUser.id,
-    userName: currentUser.name,
-    type,
-    title,
-    detail,
-    url,
-    createdAt: new Date().toISOString(),
-  });
+  ): WorkEvidence => {
+    const evidence: WorkEvidence = {
+      id: nextLocalId(),
+      taskId: task.id,
+      userId: currentUser.id,
+      userName: currentUser.name,
+      type,
+      title,
+      createdAt: new Date().toISOString(),
+    };
+
+    if (detail) evidence.detail = detail;
+    if (url) evidence.url = url;
+
+    return evidence;
+  };
 
   const evidenceDuringTimer = (task: Task, timer: ActiveWorkTimer) =>
     (task.evidence || []).filter((item) => {
@@ -1672,10 +1697,10 @@ export default function Home() {
       createdAt: currentTimeMs(),
     };
 
-      await setDoc(doc(db, "tasks", String(currentTask.id)), {
-      ...currentTask,
-      workLogs: [workLog, ...(currentTask.workLogs || [])],
-    });
+      await saveTaskDocument({
+        ...currentTask,
+        workLogs: [workLog, ...(currentTask.workLogs || [])],
+      });
 
     setActiveWorkTimer(null);
     setTimerIdleMs(0);
@@ -1730,10 +1755,10 @@ export default function Home() {
     };
 
     try {
-      await setDoc(doc(db, "tasks", String(currentTask.id)), {
-      ...currentTask,
-      workLogs: [workLog, ...(currentTask.workLogs || [])],
-    });
+      await saveTaskDocument({
+        ...currentTask,
+        workLogs: [workLog, ...(currentTask.workLogs || [])],
+      });
 
     setWorkLogHours(1);
     setWorkLogNote("");
@@ -1765,7 +1790,7 @@ export default function Home() {
     );
 
     try {
-      await setDoc(doc(db, "tasks", String(currentTask.id)), {
+      await saveTaskDocument({
         ...currentTask,
         evidence: [evidence, ...(currentTask.evidence || [])],
       });
@@ -1879,7 +1904,7 @@ export default function Home() {
       ],
     };
 
-    await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
+    await saveTaskDocument(updatedTask);
 
     addLog(`فایل به ${updatedTask.code} اضافه شد`);
   };
@@ -1967,7 +1992,7 @@ export default function Home() {
     await Promise.all([
       deleteDoc(doc(db, "sprints", String(sprintId))),
       ...sprintTasks.map((task) =>
-        setDoc(doc(db, "tasks", String(task.id)), {
+        saveTaskDocument({
           ...task,
           sprintId: null,
         })
@@ -2001,7 +2026,7 @@ export default function Home() {
           : task.evidence || [],
     };
 
-    await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
+    await saveTaskDocument(updatedTask);
     notify(sprintId ? "تسک به اسپرینت منتقل شد" : "تسک به بک‌لاگ برگشت");
     addLog(`${task.code} بین بک‌لاگ و اسپرینت جابه‌جا شد`);
   };
@@ -2157,7 +2182,7 @@ export default function Home() {
             : currentTask.evidence || [],
       };
 
-      await setDoc(doc(db, "tasks", String(updatedTask.id)), updatedTask);
+      await saveTaskDocument(updatedTask);
 
       addLog(`تسک ${updatedTask.code} جابه‌جا شد`);
       setDraggedTask(null);
@@ -2384,7 +2409,7 @@ export default function Home() {
         evidence: [],
       };
 
-      writes.push(setDoc(doc(db, "tasks", String(task.id)), task));
+      writes.push(saveTaskDocument(task));
     });
 
     await Promise.all(writes);
