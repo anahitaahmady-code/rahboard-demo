@@ -36,6 +36,9 @@ type TelegramMessage = {
   };
   text?: string;
   caption?: string;
+  quote?: {
+    text?: string;
+  };
   reply_to_message?: TelegramMessage;
 };
 
@@ -85,6 +88,7 @@ const extractApprovedTaskText = (message: TelegramMessage, text: string) => {
   const replyText =
     message.reply_to_message?.text?.trim() ||
     message.reply_to_message?.caption?.trim() ||
+    message.quote?.text?.trim() ||
     "";
 
   return replyText || cleanedText;
