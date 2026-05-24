@@ -273,7 +273,6 @@ export async function POST(request: Request) {
       if (!isApprovedMember(item)) {
         await sendTelegramMessage(chatId, approvalDeniedMessage(), {
           parseMode: "none",
-          replyMarkup: taskRegistrationKeyboard,
         });
 
         return Response.json({ ok: true, ignored: "unauthorized_task_approver" });
@@ -288,7 +287,6 @@ export async function POST(request: Request) {
           missingReplyTextMessage(item),
           {
             parseMode: "none",
-            replyMarkup: taskRegistrationKeyboard,
           }
         );
 
@@ -300,7 +298,6 @@ export async function POST(request: Request) {
       try {
         await sendTelegramMessage(chatId, `تسک ساخته شد: ${task.code}\n${task.title}`, {
           parseMode: "none",
-          replyMarkup: taskRegistrationKeyboard,
         });
       } catch (error) {
         console.error("Telegram group task reply error:", error);
