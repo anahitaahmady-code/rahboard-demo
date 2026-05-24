@@ -75,6 +75,15 @@ type WorkSchedule = {
   note: string;
 };
 
+type ActiveWorkTimer = {
+  taskId: number;
+  taskCode: string;
+  taskTitle: string;
+  userId: number;
+  userName: string;
+  startedAt: string;
+};
+
 type User = {
   id: number;
   uid?: string;
@@ -514,6 +523,20 @@ export default function Home() {
   const [activityNote, setActivityNote] = useState("");
   const [workLogHours, setWorkLogHours] = useState(1);
   const [workLogNote, setWorkLogNote] = useState("");
+  const [activeWorkTimer, setActiveWorkTimer] = useState<ActiveWorkTimer | null>(() => {
+    if (typeof window === "undefined") return null;
+
+    const saved = window.localStorage.getItem("rahboard-active-work-timer");
+    if (!saved) return null;
+
+    try {
+      return JSON.parse(saved) as ActiveWorkTimer;
+    } catch (error) {
+      console.error("Work timer load error:", error);
+      return null;
+    }
+  });
+  const [timerNow, setTimerNow] = useState(() => Date.now());
 
   const [importPreview, setImportPreview] = useState<ImportPreviewRow[]>([]);
   const [importLog, setImportLog] = useState<string[]>([]);
@@ -550,6 +573,27 @@ export default function Home() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("rahboard-work-schedules", JSON.stringify(workSchedules));
   }, [workSchedules]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    if (activeWorkTimer) {
+      window.localStorage.setItem(
+        "rahboard-active-work-timer",
+        JSON.stringify(activeWorkTimer)
+      );
+      return;
+    }
+
+    window.localStorage.removeItem("rahboard-active-work-timer");
+  }, [activeWorkTimer]);
+
+  useEffect(() => {
+    if (!activeWorkTimer) return;
+
+    const interval = window.setInterval(() => setTimerNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [activeWorkTimer]);
 
   useEffect(() => {
     if (appUser) {
@@ -1388,6 +1432,93 @@ export default function Home() {
     return canEditTask(task) || task.assigneeId === currentUser.id;
   };
 
+  const formatMinutes = (minutes: number) => {
+    const safeMinutes = Math.max(0, Math.round(minutes));
+    const hours = Math.floor(safeMinutes / 60);
+    const remainingMinutes = safeMinutes % 60;
+
+    if (hours === 0) return `${remainingMinutes} دقیقه`;
+    if (remainingMinutes === 0) return `${hours} ساعت`;
+    return `${hours} ساعت و ${remainingMinutes} دقیقه`;
+  };
+
+  const getTimerElapsedMinutes = (timer: ActiveWorkTimer | null) => {
+    if (!timer) return 0;
+    return Math.max(
+      0,
+      Math.floor((timerNow - new Date(timer.startedAt).getTime()) / 60000)
+    );
+  };
+
+  const startWorkTimer = (task: Task) => {
+    if (!canLogWork(task)) {
+      showNoAccess();
+      return;
+    }
+
+    if (activeWorkTimer && activeWorkTimer.taskId !== task.id) {
+      notify("اول تایمر فعال قبلی را متوقف کن");
+      return;
+    }
+
+    if (activeWorkTimer?.taskId === task.id) return;
+
+    setTimerNow(Date.now());
+    setActiveWorkTimer({
+      taskId: task.id,
+      taskCode: task.code,
+      taskTitle: task.title,
+      userId: currentUser.id,
+      userName: currentUser.name,
+      startedAt: new Date().toISOString(),
+    });
+    notify("تایمر کار روی تسک شروع شد");
+  };
+
+  const stopWorkTimer = async () => {
+    if (!activeWorkTimer) return;
+
+    const currentTask = tasks.find((task) => task.id === activeWorkTimer.taskId);
+    if (!currentTask) {
+      setActiveWorkTimer(null);
+      return;
+    }
+
+    if (!canLogWork(currentTask)) {
+      showNoAccess();
+      return;
+    }
+
+    const endedAt = new Date().toISOString();
+    const durationMs =
+      new Date(endedAt).getTime() - new Date(activeWorkTimer.startedAt).getTime();
+    const minutes = Math.max(1, Math.round(durationMs / 60000));
+    const workLog: WorkLog = {
+      id: Date.now(),
+      taskId: currentTask.id,
+      userId: activeWorkTimer.userId,
+      userName: activeWorkTimer.userName,
+      minutes,
+      note: workLogNote.trim() || "ثبت‌شده با تایمر",
+      source: "timer",
+      verification: "timed",
+      startedAt: activeWorkTimer.startedAt,
+      endedAt,
+      durationMs,
+      loggedAt: endedAt,
+      createdAt: Date.now(),
+    };
+
+    await setDoc(doc(db, "tasks", String(currentTask.id)), {
+      ...currentTask,
+      workLogs: [workLog, ...(currentTask.workLogs || [])],
+    });
+
+    setActiveWorkTimer(null);
+    setWorkLogNote("");
+    notify("تایمر متوقف شد و زمان واقعی ثبت شد");
+  };
+
   const addWorkLogToTask = async () => {
     if (!selectedTask) return;
 
@@ -1409,6 +1540,8 @@ export default function Home() {
       userName: currentUser.name,
       minutes,
       note: workLogNote.trim(),
+      source: "manual",
+      verification: "self_reported",
       loggedAt: new Date().toISOString(),
       createdAt: Date.now(),
     };
@@ -2121,6 +2254,44 @@ export default function Home() {
       };
     });
   }, [teamActivityLogs, users]);
+  const workVerificationSummary = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+
+    return users.map((user) => {
+      const userLogs = tasks.flatMap((task) =>
+        (task.workLogs || [])
+          .filter(
+            (log) =>
+              log.userId === user.id &&
+              (log.loggedAt || log.createdAt?.toString() || "").slice(0, 10) === today
+          )
+          .map((log) => ({ task, log }))
+      );
+      const timerMinutes = userLogs
+        .filter((item) => item.log.source === "timer")
+        .reduce((sum, item) => sum + Number(item.log.minutes || 0), 0);
+      const manualMinutes = userLogs
+        .filter((item) => item.log.source !== "timer")
+        .reduce((sum, item) => sum + Number(item.log.minutes || 0), 0);
+      const totalMinutes = timerMinutes + manualMinutes;
+      const manualRatio = totalMinutes
+        ? Math.round((manualMinutes / totalMinutes) * 100)
+        : 0;
+      const capacityMinutes = (user.capacity || 8) * 60;
+      const needsReview =
+        (manualMinutes >= 120 && manualRatio >= 70) ||
+        totalMinutes > capacityMinutes + 60;
+
+      return {
+        user,
+        timerMinutes,
+        manualMinutes,
+        totalMinutes,
+        manualRatio,
+        needsReview,
+      };
+    });
+  }, [tasks, users]);
 
   const currentSelectedTask = selectedTask
     ? tasks.find((task) => task.id === selectedTask.id)
@@ -3619,6 +3790,54 @@ export default function Home() {
                 </div>
               )}
 
+              {permissions.canManageTeam && (
+                <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-5">
+                  <h3 className="mb-2 text-xl font-black">اعتبارسنجی ساعت‌های امروز</h3>
+                  <p className="mb-4 text-sm leading-7 text-slate-500">
+                    ساعت تایمری قابل‌ردیابی‌تر از ساعت دستی است. ردیف‌های نیازمند بررسی یعنی حجم بالایی از کار فقط دستی ثبت شده یا از ظرفیت روزانه بیشتر است.
+                  </p>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[840px] text-right text-sm">
+                      <thead className="bg-slate-50 text-xs text-slate-500">
+                        <tr>
+                          <th className="p-4">عضو تیم</th>
+                          <th className="p-4">تایمری</th>
+                          <th className="p-4">دستی</th>
+                          <th className="p-4">درصد دستی</th>
+                          <th className="p-4">وضعیت</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {workVerificationSummary.map((item) => (
+                          <tr key={item.user.id} className="border-t border-slate-100">
+                            <td className="p-4 font-bold">{item.user.name}</td>
+                            <td className="p-4 text-emerald-700">
+                              {formatMinutes(item.timerMinutes)}
+                            </td>
+                            <td className="p-4 text-amber-700">
+                              {formatMinutes(item.manualMinutes)}
+                            </td>
+                            <td className="p-4">{item.manualRatio}%</td>
+                            <td className="p-4">
+                              <span
+                                className={`rounded-full px-3 py-1 text-xs font-black ${
+                                  item.needsReview
+                                    ? "bg-red-50 text-red-700"
+                                    : "bg-emerald-50 text-emerald-700"
+                                }`}
+                              >
+                                {item.needsReview ? "نیازمند بررسی" : "عادی"}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
               <div className="mt-6 rounded-3xl border border-blue-200 bg-blue-50 p-5 text-sm leading-7 text-blue-800">
                 <h3 className="mb-2 text-lg font-black">تلگرام</h3>
                 <p>
@@ -4414,6 +4633,39 @@ export default function Home() {
                 <div className="mb-8 rounded-3xl border border-slate-200 bg-slate-50 p-5">
                   <h3 className="mb-4 text-xl font-black">ساعت کار و تاریخچه ددلاین</h3>
 
+                  {activeWorkTimer && (
+                    <div className="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm leading-7 text-emerald-800">
+                      تایمر فعال: {activeWorkTimer.taskCode} - {formatMinutes(getTimerElapsedMinutes(activeWorkTimer))}
+                    </div>
+                  )}
+
+                  {canLogWork(currentSelectedTask) && (
+                    <div className="mb-5 grid gap-3 md:grid-cols-[1fr_auto_auto]">
+                      <input
+                        value={workLogNote}
+                        onChange={(e) => setWorkLogNote(e.target.value)}
+                        placeholder="روی چه چیزی کار شد؟"
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+                      />
+
+                      <button
+                        onClick={() => startWorkTimer(currentSelectedTask)}
+                        disabled={Boolean(activeWorkTimer)}
+                        className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300"
+                      >
+                        شروع تایمر
+                      </button>
+
+                      <button
+                        onClick={stopWorkTimer}
+                        disabled={!activeWorkTimer}
+                        className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300"
+                      >
+                        توقف و ثبت
+                      </button>
+                    </div>
+                  )}
+
                   {canLogWork(currentSelectedTask) && (
                     <div className="mb-5 grid gap-3 md:grid-cols-[160px_1fr_auto]">
                       <input
@@ -4452,6 +4704,17 @@ export default function Home() {
                           >
                             <div className="font-bold">
                               {log.userName || getUserName(log.userId)} - {Math.round((log.minutes / 60) * 10) / 10} ساعت
+                            </div>
+                            <div className="mt-2">
+                              <span
+                                className={`rounded-full px-2 py-1 text-[11px] font-black ${
+                                  log.source === "timer"
+                                    ? "bg-emerald-50 text-emerald-700"
+                                    : "bg-amber-50 text-amber-700"
+                                }`}
+                              >
+                                {log.source === "timer" ? "تایمری" : "دستی / خوداظهاری"}
+                              </span>
                             </div>
                             {log.note && (
                               <div className="mt-1 text-xs text-slate-500">{log.note}</div>

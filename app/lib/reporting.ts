@@ -30,6 +30,11 @@ export type WorkLog = {
   userName?: string;
   minutes: number;
   note?: string;
+  source?: "manual" | "timer";
+  verification?: "self_reported" | "timed";
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
   loggedAt: string;
   createdAt: number;
 };
@@ -109,8 +114,12 @@ export type SprintReport = {
     taskCount: number;
     doneCount: number;
     loggedMinutes: number;
+    manualMinutes: number;
+    timerMinutes: number;
     productiveMinutes: number;
     nonWorkMinutes: number;
+    manualRatio: number;
+    reviewFlags: string[];
     tasks: Array<{
       code: string;
       title: string;
@@ -256,12 +265,32 @@ export function buildSprintReport({
       const userActivityLogs = sprintActivityLogs.filter((log) => log.userId === user.id);
 
       const loggedMinutes = userTaskLogs.reduce((sum, item) => sum + item.log.minutes, 0);
+      const manualMinutes = userTaskLogs
+        .filter((item) => item.log.source !== "timer")
+        .reduce((sum, item) => sum + item.log.minutes, 0);
+      const timerMinutes = userTaskLogs
+        .filter((item) => item.log.source === "timer")
+        .reduce((sum, item) => sum + item.log.minutes, 0);
       const productiveMinutes = userActivityLogs
         .filter((log) => productiveCategories.has(log.category))
         .reduce((sum, item) => sum + item.minutes, 0);
       const nonWorkMinutes = userActivityLogs
         .filter((log) => !productiveCategories.has(log.category))
         .reduce((sum, item) => sum + item.minutes, 0);
+      const manualRatio = loggedMinutes
+        ? Math.round((manualMinutes / loggedMinutes) * 100)
+        : 0;
+      const reviewFlags = [
+        manualMinutes >= 180 && manualRatio >= 70
+          ? "Manual logs are high compared with timed sessions."
+          : "",
+        loggedMinutes > 0 && timerMinutes === 0
+          ? "No timer-backed work logs were recorded."
+          : "",
+        loggedMinutes > 0 && productiveMinutes === 0
+          ? "No daily activity evidence was recorded."
+          : "",
+      ].filter(Boolean);
 
       const taskSummaries = assignedTasks.map((task) => ({
         code: task.code,
@@ -278,8 +307,12 @@ export function buildSprintReport({
         taskCount: assignedTasks.length,
         doneCount: assignedTasks.filter((task) => isDone(task.status)).length,
         loggedMinutes,
+        manualMinutes,
+        timerMinutes,
         productiveMinutes,
         nonWorkMinutes,
+        manualRatio,
+        reviewFlags,
         tasks: taskSummaries,
       };
     })
@@ -360,9 +393,14 @@ export function formatSprintReportMarkdown(report: SprintReport, aiNarrative?: s
     ? report.developerWork
         .map((item) => {
           const hours = Math.round((item.loggedMinutes / 60) * 10) / 10;
+          const manualHours = Math.round((item.manualMinutes / 60) * 10) / 10;
+          const timerHours = Math.round((item.timerMinutes / 60) * 10) / 10;
           const productive = Math.round((item.productiveMinutes / 60) * 10) / 10;
           const nonWork = Math.round((item.nonWorkMinutes / 60) * 10) / 10;
-          return `- ${item.userName}: ${item.doneCount}/${item.taskCount} tasks done, ${hours}h logged, ${productive}h productive activity, ${nonWork}h break/non-work.`;
+          const flags = item.reviewFlags.length
+            ? ` Review: ${item.reviewFlags.join(" ")}`
+            : "";
+          return `- ${item.userName}: ${item.doneCount}/${item.taskCount} tasks done, ${hours}h logged (${timerHours}h timer, ${manualHours}h manual), ${productive}h productive activity, ${nonWork}h break/non-work.${flags}`;
         })
         .join("\n")
     : "- No developer work logs were recorded.";
