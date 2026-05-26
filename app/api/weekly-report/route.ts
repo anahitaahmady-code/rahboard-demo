@@ -3,6 +3,7 @@ import { loadRahboardData } from "@/app/lib/rahboard-store";
 import { buildSprintReport } from "@/app/lib/reporting";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const isAuthorizedCronRequest = (request: Request) => {
   const userAgent = request.headers.get("user-agent") || "";
