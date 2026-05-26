@@ -517,7 +517,6 @@ export default function Home() {
   const [taskAiSource, setTaskAiSource] = useState<"openai" | "fallback" | "">("");
   const [taskAiLoading, setTaskAiLoading] = useState(false);
   const [taskAiError, setTaskAiError] = useState("");
-  const [taskCodexPrompt, setTaskCodexPrompt] = useState("");
   const [taskCodexStatus, setTaskCodexStatus] = useState("");
 
   const [taskTitle, setTaskTitle] = useState("");
@@ -1350,7 +1349,6 @@ export default function Home() {
     setTaskAiSource("");
     setTaskAiError("");
     setTaskAiLoading(false);
-    setTaskCodexPrompt("");
     setTaskCodexStatus("");
     resetWorkEvidenceDrafts();
     setIsTaskModalOpen(true);
@@ -1378,7 +1376,6 @@ export default function Home() {
     setTaskAiSource("");
     setTaskAiError("");
     setTaskAiLoading(false);
-    setTaskCodexPrompt("");
     setTaskCodexStatus("");
     resetWorkEvidenceDrafts();
     setIsTaskModalOpen(true);
@@ -2118,44 +2115,64 @@ export default function Home() {
     const taskActivityLogs = teamActivityLogs
       .filter((log) => log.taskId === currentSelectedTask.id)
       .slice(0, 8);
-
-    const codexPayload = {
-      workspace: "C:\\Users\\EFEX\\Desktop\\jira-lite",
-      project: activeProject,
-      sprint,
-      assignee,
-      task: {
-        ...currentSelectedTask,
-        title: taskTitle,
-        description: taskDescription,
-        labels: taskLabels
-          .split(",")
-          .map((label) => label.trim())
-          .filter(Boolean),
-        assigneeId: taskAssigneeId,
-        deadline: taskDeadline,
-        priority: taskPriority,
-        taskType,
-        errorType,
-        estimate: taskEstimate,
-        estimatedHours: taskEstimatedHours,
-        evidence: (currentSelectedTask.evidence || []).slice(0, 12),
-        workLogs: (currentSelectedTask.workLogs || []).slice(0, 12),
-        comments: (currentSelectedTask.comments || []).slice(-8),
-      },
-      recentActivityLogs: taskActivityLogs,
-    };
+    const labels = taskLabels
+      .split(",")
+      .map((label) => label.trim())
+      .filter(Boolean);
+    const evidenceLines = (currentSelectedTask.evidence || [])
+      .slice(0, 8)
+      .map((item) => `- ${item.title}${item.url ? ` | ${item.url}` : ""}${item.detail ? ` | ${item.detail}` : ""}`);
+    const workLogLines = (currentSelectedTask.workLogs || [])
+      .slice(0, 8)
+      .map(
+        (log) =>
+          `- ${log.userName || getUserName(log.userId)} | ${formatMinutes(log.minutes)} | ${log.source || "manual"}${log.note ? ` | ${log.note}` : ""}`
+      );
+    const commentLines = (currentSelectedTask.comments || [])
+      .slice(-6)
+      .map((comment) => `- ${comment.author}: ${comment.text}`);
+    const activityLines = taskActivityLogs.map(
+      (log) => `- ${log.userName || getUserName(log.userId)} | ${formatMinutes(log.minutes)} | ${log.note || log.category}`
+    );
 
     return [
       "این تسک را در پروژه jira-lite بررسی و حل کن.",
       "",
-      "لطفاً مثل Codex عمل کن: اول کدبیس را بخوان، بعد راه‌حل را پیاده‌سازی کن، تست/build بگیر و در پایان خلاصه تغییرات را بگو.",
-      "اگر برای حل نیاز به تغییر کد هست، مستقیم انجام بده. تغییرات نامرتبط را دست نزن.",
+      "پروژه‌ای که باید در Codex انتخاب شود:",
+      "C:\\Users\\EFEX\\Desktop\\jira-lite",
       "",
-      "کانتکست تسک:",
-      "```json",
-      JSON.stringify(codexPayload, null, 2),
-      "```",
+      "اطلاعات تسک:",
+      `- کد: ${currentSelectedTask.code}`,
+      `- عنوان: ${taskTitle || currentSelectedTask.title}`,
+      `- توضیحات: ${taskDescription || currentSelectedTask.description || "ندارد"}`,
+      `- پروژه: ${activeProject?.name || "نامشخص"}`,
+      `- اسپرینت: ${sprint?.name || "بک‌لاگ / بدون اسپرینت"}`,
+      `- مسئول: ${assignee?.name || "بدون مسئول"}`,
+      `- وضعیت: ${currentSelectedTask.status}`,
+      `- اولویت: ${taskPriority}`,
+      `- نوع تسک: ${taskType}`,
+      `- حوزه مشکل: ${errorType}`,
+      `- ددلاین: ${taskDeadline || "ندارد"}`,
+      `- برآورد: ${taskEstimatedHours || 0} ساعت`,
+      `- لیبل‌ها: ${labels.join(", ") || "ندارد"}`,
+      "",
+      "شواهد ثبت‌شده:",
+      evidenceLines.length ? evidenceLines.join("\n") : "- شاهدی ثبت نشده است.",
+      "",
+      "ساعت‌های ثبت‌شده:",
+      workLogLines.length ? workLogLines.join("\n") : "- ساعت کاری ثبت نشده است.",
+      "",
+      "فعالیت‌های اخیر مرتبط:",
+      activityLines.length ? activityLines.join("\n") : "- فعالیت مرتبط ثبت نشده است.",
+      "",
+      "کامنت‌های اخیر:",
+      commentLines.length ? commentLines.join("\n") : "- کامنتی ثبت نشده است.",
+      "",
+      "درخواست از Codex:",
+      "1. اول ساختار کدبیس را بررسی کن و فایل‌های مرتبط را پیدا کن.",
+      "2. راه‌حل را پیاده‌سازی کن و تغییرات نامرتبط انجام نده.",
+      "3. اگر تست یا build لازم است اجرا کن.",
+      "4. در پایان دقیق بگو چه فایل‌هایی تغییر کرد و چطور باید تست شود.",
     ].join("\n");
   };
 
@@ -2163,11 +2180,11 @@ export default function Home() {
     const prompt = buildCodexTaskPrompt();
     if (!prompt) return;
 
-    setTaskCodexPrompt(prompt);
+    window.open("https://chatgpt.com/codex", "_blank", "noopener,noreferrer");
     const copied = await copyTextToClipboard(prompt);
     const status = copied
-      ? "پرامپت Codex کپی شد؛ همین متن را داخل چت Codex بفرست."
-      : "پرامپت Codex آماده شد؛ از کادر پایین کپی کن.";
+      ? "متن آماده Codex کپی شد. در صفحه Codex پروژه jira-lite را انتخاب کن و متن را Paste کن."
+      : "صفحه Codex باز شد، اما مرورگر اجازه کپی نداد. دوباره دکمه را بزن یا متن تسک را دستی برای Codex بفرست.";
 
     setTaskCodexStatus(status);
     notify(status);
@@ -5327,17 +5344,11 @@ export default function Home() {
                   )}
 
                   {taskCodexStatus && (
-                    <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
-                      <div className="mb-3 text-xs font-black text-slate-500">
-                        {taskCodexStatus}
-                      </div>
-                      <textarea
-                        value={taskCodexPrompt}
-                        readOnly
-                        dir="ltr"
-                        rows={6}
-                        className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left text-xs leading-6 text-slate-700 outline-none"
-                      />
+                    <div
+                      dir="rtl"
+                      className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-right text-sm font-bold leading-7 text-slate-600"
+                    >
+                      {taskCodexStatus}
                     </div>
                   )}
                 </div>
