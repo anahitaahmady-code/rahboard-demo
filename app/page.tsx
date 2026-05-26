@@ -551,7 +551,7 @@ export default function Home() {
   const [reportUserId, setReportUserId] = useState("all");
   const [reportProjectId, setReportProjectId] = useState("all");
   const [automationSprintId, setAutomationSprintId] = useState("");
-  const [automationEmail, setAutomationEmail] = useState("");
+  const [automationTelegramChatId, setAutomationTelegramChatId] = useState("");
   const [automationStatus, setAutomationStatus] = useState("");
   const [reportGeneratedAt] = useState(() => new Date());
   const [teamActivityLogs, setTeamActivityLogs] = useState<TeamActivityLog[]>([]);
@@ -1981,12 +1981,7 @@ export default function Home() {
   };
 
   const sendAutomationReport = async () => {
-    if (!automationEmail.trim()) {
-      setAutomationStatus("ایمیل مقصد را وارد کن.");
-      return;
-    }
-
-    setAutomationStatus("در حال ساخت گزارش و ارسال ایمیل...");
+    setAutomationStatus("در حال ساخت گزارش و ارسال به تلگرام...");
 
     try {
       const response = await fetch("api/sprint-report", {
@@ -1994,7 +1989,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sprintId: automationReport.sprint?.id || null,
-          to: automationEmail.trim(),
+          telegramChatId: automationTelegramChatId.trim() || undefined,
           users,
           projects,
           sprints,
@@ -2010,8 +2005,8 @@ export default function Home() {
 
       setAutomationStatus(
         result.delivery?.sent
-          ? "گزارش ایمیل شد."
-          : `گزارش ساخته شد، اما ارسال ایمیل فعال نیست: ${result.delivery?.message || ""}`
+          ? "گزارش به تلگرام ارسال شد."
+          : `گزارش ساخته شد، اما ارسال تلگرام فعال نیست: ${result.delivery?.message || ""}`
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "خطای نامشخص";
@@ -4064,7 +4059,7 @@ export default function Home() {
                 <div>
                   <h2 className="text-2xl font-black">گزارش هفتگی مدیریت</h2>
                   <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-500">
-                    سیستم هر هفته گزارش کامل اسپرینت، ددلاین‌ها، تغییرات، ساعت کار و اعتبارسنجی را برای مدیریت ایمیل می‌کند.
+                    سیستم هر هفته گزارش کامل اسپرینت، ددلاین‌ها، تغییرات، ساعت کار و اعتبارسنجی را برای مدیریت در تلگرام می‌فرستد.
                   </p>
                 </div>
 
@@ -4116,14 +4111,15 @@ export default function Home() {
                   <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
                     <p className="text-sm font-black text-blue-900">ارسال تست برای مدیریت</p>
                     <p className="mt-2 text-xs leading-6 text-blue-700">
-                      ارسال هفتگی از ایمیل تنظیم‌شده در Vercel استفاده می‌کند. برای تست فوری، ایمیل مقصد را اینجا وارد کن.
+                      ارسال هفتگی به چت تنظیم‌شده در Vercel می‌رود. برای تست فوری می‌توانی Chat ID را وارد کنی یا خالی بگذاری تا از TELEGRAM_REPORT_CHAT_ID استفاده شود.
                     </p>
 
                     <input
-                      value={automationEmail}
-                      onChange={(e) => setAutomationEmail(e.target.value)}
-                      type="email"
-                      placeholder="manager@example.com"
+                      value={automationTelegramChatId}
+                      onChange={(e) => setAutomationTelegramChatId(e.target.value)}
+                      type="text"
+                      dir="ltr"
+                      placeholder="-1001234567890"
                       className="mt-4 w-full rounded-2xl border border-blue-100 bg-white px-4 py-3 outline-none focus:border-blue-500"
                     />
 
@@ -4131,7 +4127,7 @@ export default function Home() {
                       onClick={sendAutomationReport}
                       className="mt-3 w-full rounded-2xl bg-slate-900 px-5 py-3 text-sm font-black text-white hover:bg-black"
                     >
-                      ارسال تست گزارش الان
+                      ارسال تست گزارش به تلگرام
                     </button>
 
                     {automationStatus && (
@@ -4300,7 +4296,7 @@ export default function Home() {
                 <h3 className="mb-2 text-lg font-black">تلگرام</h3>
                 <p>
                   وبهوک تلگرام روی مسیر <span className="font-mono">/api/telegram/webhook</span> آماده است.
-                  هر پیام متنی کانال را به تسک تبدیل می‌کند؛ دستور <span className="font-mono">/sprint_report</span> هم گزارش اسپرینت فعال را می‌سازد.
+                  هر پیام متنی کانال یا گروه را به تسک تبدیل می‌کند؛ دستور <span className="font-mono">/sprint_report</span> هم گزارش اسپرینت فعال را در همان تلگرام می‌فرستد.
                 </p>
               </div>
             </section>

@@ -6,6 +6,14 @@ type EmailResult = {
   message: string;
 };
 
+type TelegramReportResult = {
+  sent: boolean;
+  provider: "telegram" | "none";
+  message: string;
+  chatId?: string;
+  parts?: number;
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value && typeof value === "object" && !Array.isArray(value));
 
@@ -130,7 +138,7 @@ export async function sendReportEmail({
   };
 }
 
-export async function buildReportEmail(report: SprintReport) {
+export async function buildReportMessage(report: SprintReport) {
   let narrative = "";
 
   try {
@@ -145,9 +153,49 @@ export async function buildReportEmail(report: SprintReport) {
   return { subject, text, narrative };
 }
 
+export async function buildReportEmail(report: SprintReport) {
+  return buildReportMessage(report);
+}
+
 type TelegramMessageOptions = {
+  messageThreadId?: number | string | null;
   replyMarkup?: Record<string, unknown>;
   parseMode?: "Markdown" | "HTML" | "none";
+};
+
+const splitTelegramText = (text: string, maxLength = 3600) => {
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const line of text.split("\n")) {
+    const next = current ? `${current}\n${line}` : line;
+
+    if (next.length <= maxLength) {
+      current = next;
+      continue;
+    }
+
+    if (current) {
+      chunks.push(current);
+    }
+
+    if (line.length <= maxLength) {
+      current = line;
+      continue;
+    }
+
+    for (let index = 0; index < line.length; index += maxLength) {
+      chunks.push(line.slice(index, index + maxLength));
+    }
+
+    current = "";
+  }
+
+  if (current) {
+    chunks.push(current);
+  }
+
+  return chunks.length ? chunks : [text];
 };
 
 export async function sendTelegramMessage(
@@ -164,6 +212,13 @@ export async function sendTelegramMessage(
     chat_id: chatId,
     text,
   };
+
+  if (options.messageThreadId) {
+    const threadId = Number(options.messageThreadId);
+    if (Number.isFinite(threadId) && threadId > 0) {
+      body.message_thread_id = threadId;
+    }
+  }
 
   if (options.parseMode !== "none") {
     body.parse_mode = options.parseMode || "Markdown";
@@ -183,6 +238,56 @@ export async function sendTelegramMessage(
   if (!response.ok) {
     throw new Error(`Telegram sendMessage failed with ${response.status}`);
   }
+}
+
+export async function sendTelegramReport({
+  chatId,
+  threadId,
+  subject,
+  text,
+}: {
+  chatId?: number | string | null;
+  threadId?: number | string | null;
+  subject?: string;
+  text: string;
+}): Promise<TelegramReportResult> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const normalizedChatId = chatId ? String(chatId).trim() : "";
+
+  if (!token) {
+    return {
+      sent: false,
+      provider: "none",
+      message: "TELEGRAM_BOT_TOKEN is not configured.",
+    };
+  }
+
+  if (!normalizedChatId) {
+    return {
+      sent: false,
+      provider: "none",
+      message: "TELEGRAM_REPORT_CHAT_ID is not configured.",
+    };
+  }
+
+  const fullText = [subject ? `# ${subject}` : "", text].filter(Boolean).join("\n\n");
+  const chunks = splitTelegramText(fullText);
+
+  for (const [index, chunk] of chunks.entries()) {
+    const suffix = chunks.length > 1 ? `\n\n(${index + 1}/${chunks.length})` : "";
+    await sendTelegramMessage(normalizedChatId, `${chunk}${suffix}`, {
+      messageThreadId: threadId,
+      parseMode: "none",
+    });
+  }
+
+  return {
+    sent: true,
+    provider: "telegram",
+    message: `Sent to Telegram in ${chunks.length} message(s).`,
+    chatId: normalizedChatId,
+    parts: chunks.length,
+  };
 }
 
 export async function answerTelegramCallbackQuery(

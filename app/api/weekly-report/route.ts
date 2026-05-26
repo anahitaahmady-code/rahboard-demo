@@ -1,4 +1,4 @@
-import { buildReportEmail, sendReportEmail } from "@/app/lib/integrations";
+import { buildReportMessage, sendTelegramReport } from "@/app/lib/integrations";
 import { loadRahboardData } from "@/app/lib/rahboard-store";
 import { buildSprintReport } from "@/app/lib/reporting";
 
@@ -22,11 +22,11 @@ export async function GET(request: Request) {
     return Response.json({ ok: false, error: "Unauthorized cron request." }, { status: 401 });
   }
 
-  const to = process.env.SPRINT_REPORT_EMAIL_TO;
+  const chatId = process.env.TELEGRAM_REPORT_CHAT_ID;
 
-  if (!to) {
+  if (!chatId) {
     return Response.json(
-      { ok: false, error: "SPRINT_REPORT_EMAIL_TO is not configured." },
+      { ok: false, error: "TELEGRAM_REPORT_CHAT_ID is not configured." },
       { status: 500 }
     );
   }
@@ -44,18 +44,19 @@ export async function GET(request: Request) {
       projects: data.projects,
       activityLogs: data.activityLogs,
     });
-    const email = await buildReportEmail(report);
-    const delivery = await sendReportEmail({
-      to,
-      subject: `Weekly ${email.subject}`,
-      text: email.text,
+    const reportMessage = await buildReportMessage(report);
+    const delivery = await sendTelegramReport({
+      chatId,
+      threadId: process.env.TELEGRAM_REPORT_THREAD_ID || null,
+      subject: `Weekly ${reportMessage.subject}`,
+      text: reportMessage.text,
     });
 
     return Response.json({
       ok: true,
       sentAt: new Date().toISOString(),
       sprintId: sprint?.id || null,
-      to,
+      chatId,
       delivery,
     });
   } catch (error) {

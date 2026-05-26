@@ -1,7 +1,7 @@
 import {
   answerTelegramCallbackQuery,
-  buildReportEmail,
-  sendReportEmail,
+  buildReportMessage,
+  sendTelegramReport,
   sendTelegramMessage,
 } from "@/app/lib/integrations";
 import {
@@ -206,16 +206,21 @@ export async function POST(request: Request) {
     }
 
     if (isWhoAmIRequest(text)) {
-      await sendTelegramMessage(
-        chatId,
+      const identity = [
         item.from?.id
           ? `شناسه تلگرام شما: ${item.from.id}`
           : "برای پیام‌های کانال، شناسه کاربر فرستنده در دسترس نیست.",
-        {
-          parseMode: "none",
-          replyMarkup: taskRegistrationKeyboard,
-        }
-      );
+        `شناسه چت فعلی: ${chatId}`,
+        item.message_thread_id ? `شناسه تاپیک فعلی: ${item.message_thread_id}` : "",
+        "برای ارسال گزارش هفتگی به همین‌جا، TELEGRAM_REPORT_CHAT_ID را برابر شناسه چت فعلی بگذار.",
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      await sendTelegramMessage(chatId, identity, {
+        parseMode: "none",
+        replyMarkup: taskRegistrationKeyboard,
+      });
 
       return Response.json({ ok: true, command: "whoami" });
     }
@@ -230,7 +235,6 @@ export async function POST(request: Request) {
     }
 
     if (text.startsWith("/sprint_report")) {
-      const emailTo = process.env.SPRINT_REPORT_EMAIL_TO;
       const data = await loadRahboardData();
       const sprint = data.sprints.find((entry) => entry.status === "active") || data.sprints[0] || null;
       const report = buildSprintReport({
@@ -240,25 +244,20 @@ export async function POST(request: Request) {
         projects: data.projects,
         activityLogs: data.activityLogs,
       });
-      const email = await buildReportEmail(report);
-      const delivery = emailTo
-        ? await sendReportEmail({
-            to: emailTo,
-            subject: email.subject,
-            text: email.text,
-          })
-        : null;
+      const reportMessage = await buildReportMessage(report);
+      const delivery = await sendTelegramReport({
+        chatId,
+        threadId: item.message_thread_id || null,
+        subject: reportMessage.subject,
+        text: reportMessage.text,
+      });
 
-      try {
+      if (!delivery.sent) {
         await sendTelegramMessage(
           chatId,
-          delivery?.sent
-            ? "گزارش اسپرینت ایمیل شد."
-            : "گزارش ساخته شد، ولی ایمیل مقصد یا سرویس ارسال تنظیم نشده است.",
-          { replyMarkup: taskRegistrationKeyboard }
+          `گزارش ساخته شد، ولی ارسال تلگرام انجام نشد: ${delivery.message}`,
+          { parseMode: "none", replyMarkup: taskRegistrationKeyboard }
         );
-      } catch (error) {
-        console.error("Telegram report reply error:", error);
       }
 
       return Response.json({ ok: true, command: "sprint_report", delivery });

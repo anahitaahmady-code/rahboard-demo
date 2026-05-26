@@ -1,4 +1,4 @@
-import { buildReportEmail, sendReportEmail } from "@/app/lib/integrations";
+import { buildReportMessage, sendTelegramReport } from "@/app/lib/integrations";
 import { loadRahboardData } from "@/app/lib/rahboard-store";
 import {
   buildSprintReport,
@@ -13,6 +13,8 @@ export const runtime = "nodejs";
 
 type ReportRequest = {
   sprintId?: number | string | null;
+  telegramChatId?: number | string | null;
+  telegramThreadId?: number | string | null;
   to?: string;
   users?: BasicUser[];
   projects?: BasicProject[];
@@ -47,23 +49,18 @@ export async function POST(request: Request) {
       projects: data.projects,
       activityLogs: data.activityLogs,
     });
-    const email = await buildReportEmail(report);
-    const delivery = body.to
-      ? await sendReportEmail({
-          to: body.to,
-          subject: email.subject,
-          text: email.text,
-        })
-      : {
-          sent: false,
-          provider: "none" as const,
-          message: "No recipient provided. Report was generated only.",
-        };
+    const reportMessage = await buildReportMessage(report);
+    const delivery = await sendTelegramReport({
+      chatId: body.telegramChatId || process.env.TELEGRAM_REPORT_CHAT_ID || null,
+      threadId: body.telegramThreadId || process.env.TELEGRAM_REPORT_THREAD_ID || null,
+      subject: reportMessage.subject,
+      text: reportMessage.text,
+    });
 
     return Response.json({
       ok: true,
       report,
-      email,
+      message: reportMessage,
       delivery,
     });
   } catch (error) {
