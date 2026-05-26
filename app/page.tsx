@@ -513,6 +513,10 @@ export default function Home() {
 
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+  const [taskAiSolution, setTaskAiSolution] = useState("");
+  const [taskAiSource, setTaskAiSource] = useState<"openai" | "fallback" | "">("");
+  const [taskAiLoading, setTaskAiLoading] = useState(false);
+  const [taskAiError, setTaskAiError] = useState("");
 
   const [taskTitle, setTaskTitle] = useState("");
   const [taskDescription, setTaskDescription] = useState("");
@@ -1340,6 +1344,10 @@ export default function Home() {
     setCommentText("");
     setWorkLogHours(1);
     setWorkLogNote("");
+    setTaskAiSolution("");
+    setTaskAiSource("");
+    setTaskAiError("");
+    setTaskAiLoading(false);
     resetWorkEvidenceDrafts();
     setIsTaskModalOpen(true);
   };
@@ -1362,6 +1370,10 @@ export default function Home() {
     setCommentText("");
     setWorkLogHours(1);
     setWorkLogNote("");
+    setTaskAiSolution("");
+    setTaskAiSource("");
+    setTaskAiError("");
+    setTaskAiLoading(false);
     resetWorkEvidenceDrafts();
     setIsTaskModalOpen(true);
   };
@@ -2011,6 +2023,66 @@ export default function Home() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "خطای نامشخص";
       setAutomationStatus(`ارسال گزارش ناموفق بود: ${message}`);
+    }
+  };
+
+  const requestTaskAiSolution = async () => {
+    if (!currentSelectedTask) return;
+
+    setTaskAiLoading(true);
+    setTaskAiError("");
+    setTaskAiSolution("");
+    setTaskAiSource("");
+
+    const assignee = users.find((user) => user.id === currentSelectedTask.assigneeId) || null;
+    const sprint = projectSprints.find((item) => item.id === currentSelectedTask.sprintId) || null;
+    const taskActivityLogs = teamActivityLogs
+      .filter((log) => log.taskId === currentSelectedTask.id)
+      .slice(0, 8);
+
+    try {
+      const response = await fetch("api/task-ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          task: {
+            ...currentSelectedTask,
+            title: taskTitle,
+            description: taskDescription,
+            labels: taskLabels
+              .split(",")
+              .map((label) => label.trim())
+              .filter(Boolean),
+            assigneeId: taskAssigneeId,
+            deadline: taskDeadline,
+            priority: taskPriority,
+            taskType,
+            errorType,
+            estimate: taskEstimate,
+            estimatedHours: taskEstimatedHours,
+            evidence: (currentSelectedTask.evidence || []).slice(0, 8),
+            workLogs: (currentSelectedTask.workLogs || []).slice(0, 8),
+            comments: (currentSelectedTask.comments || []).slice(-6),
+          },
+          project: activeProject,
+          sprint,
+          assignee,
+          recentActivityLogs: taskActivityLogs,
+        }),
+      });
+      const result = await response.json();
+
+      if (!response.ok || !result.ok) {
+        throw new Error(result.error || "AI request failed.");
+      }
+
+      setTaskAiSolution(result.solution || "");
+      setTaskAiSource(result.source || "");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "خطای نامشخص";
+      setTaskAiError(`اتصال به AI ناموفق بود: ${message}`);
+    } finally {
+      setTaskAiLoading(false);
     }
   };
 
@@ -5120,6 +5192,45 @@ export default function Home() {
 
             {selectedTask && currentSelectedTask && (
               <>
+                <div className="mb-8 rounded-3xl border border-indigo-200 bg-indigo-50 p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <h3 className="text-xl font-black text-indigo-950">اتصال به AI</h3>
+                      <p className="mt-1 text-sm leading-7 text-indigo-700">
+                        با توجه به عنوان، توضیحات، لاگ‌ها و شواهد همین تسک، یک راه‌حل کوتاه و عملی پیشنهاد می‌دهد.
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={requestTaskAiSolution}
+                      disabled={taskAiLoading}
+                      className="rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-black text-white shadow-lg shadow-indigo-100 hover:bg-indigo-700 disabled:bg-slate-300"
+                    >
+                      {taskAiLoading ? "در حال تحلیل..." : "دریافت راه‌حل AI"}
+                    </button>
+                  </div>
+
+                  {taskAiError && (
+                    <div className="mt-4 rounded-2xl border border-red-100 bg-white px-4 py-3 text-sm leading-7 text-red-700">
+                      {taskAiError}
+                    </div>
+                  )}
+
+                  {taskAiSolution && (
+                    <div className="mt-4 rounded-2xl border border-indigo-100 bg-white p-4">
+                      <div className="mb-3 flex items-center justify-between gap-3 text-xs font-black text-slate-400">
+                        <span>پیشنهاد راه‌حل</span>
+                        <span className="rounded-full bg-indigo-50 px-3 py-1 text-indigo-700">
+                          {taskAiSource === "openai" ? "AI" : "راهنمای اولیه"}
+                        </span>
+                      </div>
+                      <div className="whitespace-pre-wrap text-sm leading-8 text-slate-700">
+                        {taskAiSolution}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div className="mb-8 rounded-3xl border border-slate-200 bg-slate-50 p-5">
                   <h3 className="mb-4 text-xl font-black">ساعت کار و تاریخچه ددلاین</h3>
 

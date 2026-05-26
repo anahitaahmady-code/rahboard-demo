@@ -76,6 +76,127 @@ export async function generateAiSprintNarrative(report: SprintReport) {
   return getOutputText(data);
 }
 
+type TaskAiInput = {
+  task: Record<string, unknown>;
+  project?: Record<string, unknown> | null;
+  sprint?: Record<string, unknown> | null;
+  assignee?: Record<string, unknown> | null;
+  recentActivityLogs?: Array<Record<string, unknown>>;
+};
+
+const getTaskText = (task: Record<string, unknown>, key: string) =>
+  typeof task[key] === "string" ? String(task[key]) : "";
+
+const fallbackTaskSolution = ({ task }: TaskAiInput) => {
+  const taskType = getTaskText(task, "taskType") || "task";
+  const errorType = getTaskText(task, "errorType") || "unknown";
+  const title = getTaskText(task, "title") || "این تسک";
+
+  const specialtySteps: Record<string, string[]> = {
+    frontend: [
+      "ابتدا مسیر ایجاد خطا را در مرورگر بازسازی کن و Console/Network را بررسی کن.",
+      "کامپوننت یا state مرتبط با این رفتار را پیدا کن و ورودی‌های مرزی را تست کن.",
+      "بعد از اصلاح، حالت loading، empty، error و responsive را یک بار دستی چک کن.",
+    ],
+    backend: [
+      "ابتدا endpoint یا job مرتبط را با داده واقعی بازسازی کن و لاگ خطا را جدا کن.",
+      "اعتبارسنجی ورودی، permission، query دیتابیس و response contract را بررسی کن.",
+      "بعد از اصلاح، یک تست مسیر موفق و یک تست مسیر خطا اضافه کن.",
+    ],
+    database: [
+      "ساختار داده، migration و indexهای مرتبط را بررسی کن.",
+      "روی داده نمونه، query مشکل‌دار را جدا اجرا کن و خروجی را با انتظار محصول مقایسه کن.",
+      "قبل از تغییر schema، اثر آن روی داده‌های قبلی و گزارش‌ها را چک کن.",
+    ],
+    network: [
+      "در Network tab وضعیت request، timeout، CORS و payload را بررسی کن.",
+      "retry، خطای قابل فهم برای کاربر و logging سمت سرور را کنترل کن.",
+      "بعد از اصلاح، سناریوی اینترنت کند یا پاسخ دیرهنگام را هم تست کن.",
+    ],
+    security: [
+      "سطح دسترسی کاربر، اعتبارسنجی سمت سرور و داده‌های حساس در response را بررسی کن.",
+      "سناریوی کاربر بدون مجوز و ورودی دستکاری‌شده را تست کن.",
+      "نتیجه را با حداقل دسترسی لازم پیاده‌سازی کن.",
+    ],
+    devops: [
+      "ابتدا build log، env vars، مسیر deploy و تفاوت local/production را بررسی کن.",
+      "اگر مشکل runtime است، dependency و file tracing را جدا چک کن.",
+      "بعد از اصلاح، یک smoke test روی production انجام بده.",
+    ],
+    unknown: [
+      "ابتدا مشکل را با یک سناریوی کوچک و قابل تکرار بازسازی کن.",
+      "فرضیه‌ها را یکی‌یکی حذف کن: ورودی، وضعیت فعلی، لاگ، وابستگی‌ها و خروجی.",
+      "بعد از اصلاح، نتیجه را با شاهد قابل بررسی مثل لینک PR، commit یا تست ثبت کن.",
+    ],
+  };
+
+  return [
+    `خلاصه راه‌حل برای «${title}»`,
+    "",
+    `این تسک از نوع ${taskType} و حوزه ${errorType} است. پیشنهاد این است که اول مسئله را بازسازی کنی، بعد کوچک‌ترین نقطه خراب را جدا کنی و در آخر با شاهد قابل بررسی تحویل بدهی.`,
+    "",
+    "مراحل پیشنهادی:",
+    ...(specialtySteps[errorType] || specialtySteps.unknown).map((step, index) => `${index + 1}. ${step}`),
+    "",
+    "خروجی قابل قبول:",
+    "- علت مشکل مشخص باشد.",
+    "- اصلاح با تست یا چک دستی تأیید شده باشد.",
+    "- لینک commit / PR / سند بررسی به عنوان شاهد ثبت شود.",
+  ].join("\n");
+};
+
+export async function generateAiTaskSolution(input: TaskAiInput) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return {
+      source: "fallback" as const,
+      solution: fallbackTaskSolution(input),
+    };
+  }
+
+  const model = process.env.OPENAI_MODEL || "gpt-5.2";
+  const prompt = [
+    "You are a senior software engineer helping an employee solve a task.",
+    "Write in Persian only.",
+    "Be concise, practical, and specific to the task data.",
+    "Do not invent logs, files, APIs, or facts that are not present.",
+    "Return a readable answer with these headings:",
+    "خلاصه راه‌حل",
+    "مراحل پیشنهادی",
+    "چک‌های لازم",
+    "خروجی قابل قبول",
+    "Keep it under 220 Persian words.",
+    JSON.stringify(input),
+  ].join("\n\n");
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      input: prompt,
+      max_output_tokens: 700,
+      store: false,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`OpenAI request failed with ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  const solution = getOutputText(data);
+
+  return {
+    source: "openai" as const,
+    solution: solution || fallbackTaskSolution(input),
+  };
+}
+
 export async function sendReportEmail({
   to,
   subject,
