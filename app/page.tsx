@@ -4111,7 +4111,7 @@ export default function Home() {
                   <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
                     <p className="text-sm font-black text-blue-900">ارسال تست برای مدیریت</p>
                     <p className="mt-2 text-xs leading-6 text-blue-700">
-                      ارسال هفتگی به چت تنظیم‌شده در Vercel می‌رود. برای تست فوری می‌توانی Chat ID را وارد کنی یا خالی بگذاری تا از TELEGRAM_REPORT_CHAT_ID استفاده شود.
+                      ارسال هفتگی به چت تنظیم‌شده در Vercel می‌رود. Chat ID واقعی را با /whoami از همان گروه بگیر؛ عدد نمونه داخل فیلد قابل استفاده نیست.
                     </p>
 
                     <input

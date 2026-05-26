@@ -198,6 +198,56 @@ const splitTelegramText = (text: string, maxLength = 3600) => {
   return chunks.length ? chunks : [text];
 };
 
+const normalizeTelegramChatId = (value: number | string) => {
+  if (typeof value === "number") return String(value);
+
+  const digitMap: Record<string, string> = {
+    "۰": "0",
+    "۱": "1",
+    "۲": "2",
+    "۳": "3",
+    "۴": "4",
+    "۵": "5",
+    "۶": "6",
+    "۷": "7",
+    "۸": "8",
+    "۹": "9",
+    "٠": "0",
+    "١": "1",
+    "٢": "2",
+    "٣": "3",
+    "٤": "4",
+    "٥": "5",
+    "٦": "6",
+    "٧": "7",
+    "٨": "8",
+    "٩": "9",
+  };
+
+  return value
+    .trim()
+    .replace(/[۰-۹٠-٩]/g, (digit) => digitMap[digit] || digit)
+    .replace(/[−–—]/g, "-")
+    .replace(/[\s\u200c\u200f\u202a-\u202e]/g, "");
+};
+
+const getTelegramErrorMessage = async (response: Response) => {
+  try {
+    const data = await response.json();
+    if (isRecord(data) && typeof data.description === "string") {
+      return data.description;
+    }
+  } catch {
+    try {
+      return await response.text();
+    } catch {
+      return "";
+    }
+  }
+
+  return "";
+};
+
 export async function sendTelegramMessage(
   chatId: number | string,
   text: string,
@@ -209,7 +259,7 @@ export async function sendTelegramMessage(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2500);
   const body: Record<string, unknown> = {
-    chat_id: chatId,
+    chat_id: normalizeTelegramChatId(chatId),
     text,
   };
 
@@ -236,7 +286,12 @@ export async function sendTelegramMessage(
   }).finally(() => clearTimeout(timeout));
 
   if (!response.ok) {
-    throw new Error(`Telegram sendMessage failed with ${response.status}`);
+    const errorMessage = await getTelegramErrorMessage(response);
+    throw new Error(
+      `Telegram sendMessage failed with ${response.status}${
+        errorMessage ? `: ${errorMessage}` : ""
+      }`
+    );
   }
 }
 
@@ -252,7 +307,7 @@ export async function sendTelegramReport({
   text: string;
 }): Promise<TelegramReportResult> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  const normalizedChatId = chatId ? String(chatId).trim() : "";
+  const normalizedChatId = chatId ? normalizeTelegramChatId(chatId) : "";
 
   if (!token) {
     return {
