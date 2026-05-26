@@ -9,8 +9,10 @@ type EmailResult = {
 type TelegramReportResult = {
   sent: boolean;
   provider: "telegram" | "none";
+  format?: "message" | "pdf";
   message: string;
   chatId?: string;
+  fileName?: string;
   parts?: number;
 };
 
@@ -295,6 +297,113 @@ export async function sendTelegramMessage(
   }
 }
 
+export async function sendTelegramDocument({
+  chatId,
+  threadId,
+  caption,
+  fileName,
+  data,
+}: {
+  chatId: number | string;
+  threadId?: number | string | null;
+  caption?: string;
+  fileName: string;
+  data: Buffer;
+}) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+
+  const normalizedChatId = normalizeTelegramChatId(chatId);
+  const formData = new FormData();
+  formData.set("chat_id", normalizedChatId);
+
+  if (threadId) {
+    const normalizedThreadId = Number(normalizeTelegramChatId(threadId));
+    if (Number.isFinite(normalizedThreadId) && normalizedThreadId > 0) {
+      formData.set("message_thread_id", String(normalizedThreadId));
+    }
+  }
+
+  if (caption) {
+    formData.set("caption", caption.slice(0, 1024));
+  }
+
+  formData.set(
+    "document",
+    new Blob([new Uint8Array(data)], { type: "application/pdf" }),
+    fileName
+  );
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+    method: "POST",
+    signal: controller.signal,
+    body: formData,
+  }).finally(() => clearTimeout(timeout));
+
+  if (!response.ok) {
+    const errorMessage = await getTelegramErrorMessage(response);
+    throw new Error(
+      `Telegram sendDocument failed with ${response.status}${
+        errorMessage ? `: ${errorMessage}` : ""
+      }`
+    );
+  }
+}
+
+export async function sendTelegramReportPdf({
+  chatId,
+  threadId,
+  caption,
+  fileName,
+  data,
+}: {
+  chatId?: number | string | null;
+  threadId?: number | string | null;
+  caption?: string;
+  fileName: string;
+  data: Buffer;
+}): Promise<TelegramReportResult> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const normalizedChatId = chatId ? normalizeTelegramChatId(chatId) : "";
+
+  if (!token) {
+    return {
+      sent: false,
+      provider: "none",
+      format: "pdf",
+      message: "TELEGRAM_BOT_TOKEN is not configured.",
+    };
+  }
+
+  if (!normalizedChatId) {
+    return {
+      sent: false,
+      provider: "none",
+      format: "pdf",
+      message: "TELEGRAM_REPORT_CHAT_ID is not configured.",
+    };
+  }
+
+  await sendTelegramDocument({
+    chatId: normalizedChatId,
+    threadId,
+    caption,
+    fileName,
+    data,
+  });
+
+  return {
+    sent: true,
+    provider: "telegram",
+    format: "pdf",
+    message: "PDF report sent to Telegram.",
+    chatId: normalizedChatId,
+    fileName,
+  };
+}
+
 export async function sendTelegramReport({
   chatId,
   threadId,
@@ -339,6 +448,7 @@ export async function sendTelegramReport({
   return {
     sent: true,
     provider: "telegram",
+    format: "message",
     message: `Sent to Telegram in ${chunks.length} message(s).`,
     chatId: normalizedChatId,
     parts: chunks.length,

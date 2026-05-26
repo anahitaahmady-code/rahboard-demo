@@ -1981,7 +1981,7 @@ export default function Home() {
   };
 
   const sendAutomationReport = async () => {
-    setAutomationStatus("در حال ساخت گزارش و ارسال به تلگرام...");
+    setAutomationStatus("در حال ساخت PDF گزارش و ارسال به تلگرام...");
 
     try {
       const response = await fetch("api/sprint-report", {
@@ -2005,7 +2005,7 @@ export default function Home() {
 
       setAutomationStatus(
         result.delivery?.sent
-          ? "گزارش به تلگرام ارسال شد."
+          ? "PDF گزارش به تلگرام ارسال شد."
           : `گزارش ساخته شد، اما ارسال تلگرام فعال نیست: ${result.delivery?.message || ""}`
       );
     } catch (error) {
@@ -4059,7 +4059,7 @@ export default function Home() {
                 <div>
                   <h2 className="text-2xl font-black">گزارش هفتگی مدیریت</h2>
                   <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-500">
-                    سیستم هر هفته گزارش کامل اسپرینت، ددلاین‌ها، تغییرات، ساعت کار و اعتبارسنجی را برای مدیریت در تلگرام می‌فرستد.
+                    سیستم هر هفته گزارش کامل اسپرینت را به شکل PDF فارسی، همراه نمودار و جدول، برای مدیریت در تلگرام می‌فرستد.
                   </p>
                 </div>
 
@@ -4073,7 +4073,7 @@ export default function Home() {
                   <div>
                     <h3 className="text-xl font-black">گزارش کامل هفتگی</h3>
                     <p className="mt-2 text-sm leading-7 text-slate-500">
-                      گزارش خودکار از اسپرینت فعال ساخته می‌شود و شامل تسک‌های انجام‌شده، کارهای عقب‌افتاده، تغییر ددلاین، ساعت کار هر نفر، فعالیت روزانه و موارد نیازمند بررسی است.
+                      گزارش خودکار از اسپرینت فعال ساخته می‌شود و شامل نمودار پیشرفت، تسک‌های انجام‌شده، کارهای عقب‌افتاده، تغییر ددلاین، ساعت کار هر نفر، فعالیت روزانه و موارد نیازمند بررسی است.
                     </p>
 
                     <div className="mt-5 grid gap-3 md:grid-cols-3">
@@ -4109,9 +4109,9 @@ export default function Home() {
                   </div>
 
                   <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
-                    <p className="text-sm font-black text-blue-900">ارسال تست برای مدیریت</p>
+                    <p className="text-sm font-black text-blue-900">ارسال تست PDF برای مدیریت</p>
                     <p className="mt-2 text-xs leading-6 text-blue-700">
-                      ارسال هفتگی به چت تنظیم‌شده در Vercel می‌رود. Chat ID واقعی را با /whoami از همان گروه بگیر؛ عدد نمونه داخل فیلد قابل استفاده نیست.
+                      ارسال هفتگی به چت تنظیم‌شده در Vercel می‌رود. Chat ID واقعی را با /whoami بگیر؛ گزارش به شکل فایل PDF ارسال می‌شود.
                     </p>
 
                     <input
@@ -4127,7 +4127,7 @@ export default function Home() {
                       onClick={sendAutomationReport}
                       className="mt-3 w-full rounded-2xl bg-slate-900 px-5 py-3 text-sm font-black text-white hover:bg-black"
                     >
-                      ارسال تست گزارش به تلگرام
+                      ارسال PDF گزارش به تلگرام
                     </button>
 
                     {automationStatus && (
@@ -4296,7 +4296,7 @@ export default function Home() {
                 <h3 className="mb-2 text-lg font-black">تلگرام</h3>
                 <p>
                   وبهوک تلگرام روی مسیر <span className="font-mono">/api/telegram/webhook</span> آماده است.
-                  هر پیام متنی کانال یا گروه را به تسک تبدیل می‌کند؛ دستور <span className="font-mono">/sprint_report</span> هم گزارش اسپرینت فعال را در همان تلگرام می‌فرستد.
+                  هر پیام متنی کانال یا گروه را به تسک تبدیل می‌کند؛ دستور <span className="font-mono">/sprint_report</span> هم گزارش PDF اسپرینت فعال را در همان تلگرام می‌فرستد.
                 </p>
               </div>
             </section>

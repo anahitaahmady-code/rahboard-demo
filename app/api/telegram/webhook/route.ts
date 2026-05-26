@@ -1,9 +1,9 @@
 import {
   answerTelegramCallbackQuery,
-  buildReportMessage,
-  sendTelegramReport,
+  sendTelegramReportPdf,
   sendTelegramMessage,
 } from "@/app/lib/integrations";
+import { buildSprintReportPdf } from "@/app/lib/report-pdf";
 import {
   createTaskFromTelegramText,
   loadTelegramPendingGroupMessage,
@@ -13,6 +13,7 @@ import {
 import { buildSprintReport } from "@/app/lib/reporting";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 type TelegramUpdate = {
   message?: TelegramMessage;
@@ -244,12 +245,13 @@ export async function POST(request: Request) {
         projects: data.projects,
         activityLogs: data.activityLogs,
       });
-      const reportMessage = await buildReportMessage(report);
-      const delivery = await sendTelegramReport({
+      const pdf = await buildSprintReportPdf(report);
+      const delivery = await sendTelegramReportPdf({
         chatId,
         threadId: item.message_thread_id || null,
-        subject: reportMessage.subject,
-        text: reportMessage.text,
+        caption: pdf.subject,
+        fileName: pdf.fileName,
+        data: pdf.buffer,
       });
 
       if (!delivery.sent) {

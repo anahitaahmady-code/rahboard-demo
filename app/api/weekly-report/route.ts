@@ -1,9 +1,11 @@
-import { buildReportMessage, sendTelegramReport } from "@/app/lib/integrations";
+import { sendTelegramReportPdf } from "@/app/lib/integrations";
+import { buildSprintReportPdf } from "@/app/lib/report-pdf";
 import { loadRahboardData } from "@/app/lib/rahboard-store";
 import { buildSprintReport } from "@/app/lib/reporting";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const isAuthorizedCronRequest = (request: Request) => {
   const userAgent = request.headers.get("user-agent") || "";
@@ -44,12 +46,13 @@ export async function GET(request: Request) {
       projects: data.projects,
       activityLogs: data.activityLogs,
     });
-    const reportMessage = await buildReportMessage(report);
-    const delivery = await sendTelegramReport({
+    const pdf = await buildSprintReportPdf(report);
+    const delivery = await sendTelegramReportPdf({
       chatId,
       threadId: process.env.TELEGRAM_REPORT_THREAD_ID || null,
-      subject: `Weekly ${reportMessage.subject}`,
-      text: reportMessage.text,
+      caption: `گزارش هفتگی مدیریت - ${pdf.subject}`,
+      fileName: pdf.fileName,
+      data: pdf.buffer,
     });
 
     return Response.json({
@@ -57,6 +60,7 @@ export async function GET(request: Request) {
       sentAt: new Date().toISOString(),
       sprintId: sprint?.id || null,
       chatId,
+      fileName: pdf.fileName,
       delivery,
     });
   } catch (error) {

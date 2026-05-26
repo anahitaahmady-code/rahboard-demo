@@ -1,4 +1,5 @@
-import { buildReportMessage, sendTelegramReport } from "@/app/lib/integrations";
+import { sendTelegramReportPdf } from "@/app/lib/integrations";
+import { buildSprintReportPdf } from "@/app/lib/report-pdf";
 import { loadRahboardData } from "@/app/lib/rahboard-store";
 import {
   buildSprintReport,
@@ -10,6 +11,7 @@ import {
 } from "@/app/lib/reporting";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 type ReportRequest = {
   sprintId?: number | string | null;
@@ -49,18 +51,22 @@ export async function POST(request: Request) {
       projects: data.projects,
       activityLogs: data.activityLogs,
     });
-    const reportMessage = await buildReportMessage(report);
-    const delivery = await sendTelegramReport({
+    const pdf = await buildSprintReportPdf(report);
+    const delivery = await sendTelegramReportPdf({
       chatId: body.telegramChatId || process.env.TELEGRAM_REPORT_CHAT_ID || null,
       threadId: body.telegramThreadId || process.env.TELEGRAM_REPORT_THREAD_ID || null,
-      subject: reportMessage.subject,
-      text: reportMessage.text,
+      caption: pdf.subject,
+      fileName: pdf.fileName,
+      data: pdf.buffer,
     });
 
     return Response.json({
       ok: true,
       report,
-      message: reportMessage,
+      pdf: {
+        fileName: pdf.fileName,
+        subject: pdf.subject,
+      },
       delivery,
     });
   } catch (error) {
