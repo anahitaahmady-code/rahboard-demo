@@ -517,6 +517,8 @@ export default function Home() {
   const [taskAiSource, setTaskAiSource] = useState<"openai" | "fallback" | "">("");
   const [taskAiLoading, setTaskAiLoading] = useState(false);
   const [taskAiError, setTaskAiError] = useState("");
+  const [taskCodexPrompt, setTaskCodexPrompt] = useState("");
+  const [taskCodexStatus, setTaskCodexStatus] = useState("");
 
   const [taskTitle, setTaskTitle] = useState("");
   const [taskDescription, setTaskDescription] = useState("");
@@ -1348,6 +1350,8 @@ export default function Home() {
     setTaskAiSource("");
     setTaskAiError("");
     setTaskAiLoading(false);
+    setTaskCodexPrompt("");
+    setTaskCodexStatus("");
     resetWorkEvidenceDrafts();
     setIsTaskModalOpen(true);
   };
@@ -1374,6 +1378,8 @@ export default function Home() {
     setTaskAiSource("");
     setTaskAiError("");
     setTaskAiLoading(false);
+    setTaskCodexPrompt("");
+    setTaskCodexStatus("");
     resetWorkEvidenceDrafts();
     setIsTaskModalOpen(true);
   };
@@ -2084,6 +2090,87 @@ export default function Home() {
     } finally {
       setTaskAiLoading(false);
     }
+  };
+
+  const copyTextToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const copied = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      return copied;
+    }
+  };
+
+  const buildCodexTaskPrompt = () => {
+    if (!currentSelectedTask) return "";
+
+    const assignee = users.find((user) => user.id === currentSelectedTask.assigneeId) || null;
+    const sprint = projectSprints.find((item) => item.id === currentSelectedTask.sprintId) || null;
+    const taskActivityLogs = teamActivityLogs
+      .filter((log) => log.taskId === currentSelectedTask.id)
+      .slice(0, 8);
+
+    const codexPayload = {
+      workspace: "C:\\Users\\EFEX\\Desktop\\jira-lite",
+      project: activeProject,
+      sprint,
+      assignee,
+      task: {
+        ...currentSelectedTask,
+        title: taskTitle,
+        description: taskDescription,
+        labels: taskLabels
+          .split(",")
+          .map((label) => label.trim())
+          .filter(Boolean),
+        assigneeId: taskAssigneeId,
+        deadline: taskDeadline,
+        priority: taskPriority,
+        taskType,
+        errorType,
+        estimate: taskEstimate,
+        estimatedHours: taskEstimatedHours,
+        evidence: (currentSelectedTask.evidence || []).slice(0, 12),
+        workLogs: (currentSelectedTask.workLogs || []).slice(0, 12),
+        comments: (currentSelectedTask.comments || []).slice(-8),
+      },
+      recentActivityLogs: taskActivityLogs,
+    };
+
+    return [
+      "این تسک را در پروژه jira-lite بررسی و حل کن.",
+      "",
+      "لطفاً مثل Codex عمل کن: اول کدبیس را بخوان، بعد راه‌حل را پیاده‌سازی کن، تست/build بگیر و در پایان خلاصه تغییرات را بگو.",
+      "اگر برای حل نیاز به تغییر کد هست، مستقیم انجام بده. تغییرات نامرتبط را دست نزن.",
+      "",
+      "کانتکست تسک:",
+      "```json",
+      JSON.stringify(codexPayload, null, 2),
+      "```",
+    ].join("\n");
+  };
+
+  const connectTaskToCodex = async () => {
+    const prompt = buildCodexTaskPrompt();
+    if (!prompt) return;
+
+    setTaskCodexPrompt(prompt);
+    const copied = await copyTextToClipboard(prompt);
+    const status = copied
+      ? "پرامپت Codex کپی شد؛ همین متن را داخل چت Codex بفرست."
+      : "پرامپت Codex آماده شد؛ از کادر پایین کپی کن.";
+
+    setTaskCodexStatus(status);
+    notify(status);
   };
 
   const addAttachment = async (files: FileList | null) => {
@@ -5201,13 +5288,22 @@ export default function Home() {
                       </p>
                     </div>
 
-                    <button
-                      onClick={requestTaskAiSolution}
-                      disabled={taskAiLoading}
-                      className="rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-black text-white shadow-lg shadow-indigo-100 hover:bg-indigo-700 disabled:bg-slate-300"
-                    >
-                      {taskAiLoading ? "در حال تحلیل..." : "دریافت راه‌حل AI"}
-                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={requestTaskAiSolution}
+                        disabled={taskAiLoading}
+                        className="rounded-2xl bg-indigo-600 px-5 py-3 text-sm font-black text-white shadow-lg shadow-indigo-100 hover:bg-indigo-700 disabled:bg-slate-300"
+                      >
+                        {taskAiLoading ? "در حال تحلیل..." : "دریافت راه‌حل AI"}
+                      </button>
+
+                      <button
+                        onClick={connectTaskToCodex}
+                        className="rounded-2xl bg-slate-950 px-5 py-3 text-sm font-black text-white shadow-lg shadow-slate-200 hover:bg-black"
+                      >
+                        اتصال به Codex
+                      </button>
+                    </div>
                   </div>
 
                   {taskAiError && (
@@ -5227,6 +5323,21 @@ export default function Home() {
                       <div className="whitespace-pre-wrap text-sm leading-8 text-slate-700">
                         {taskAiSolution}
                       </div>
+                    </div>
+                  )}
+
+                  {taskCodexStatus && (
+                    <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
+                      <div className="mb-3 text-xs font-black text-slate-500">
+                        {taskCodexStatus}
+                      </div>
+                      <textarea
+                        value={taskCodexPrompt}
+                        readOnly
+                        dir="ltr"
+                        rows={6}
+                        className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left text-xs leading-6 text-slate-700 outline-none"
+                      />
                     </div>
                   )}
                 </div>
