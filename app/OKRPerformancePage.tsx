@@ -30,6 +30,14 @@ type OKRLevel = "company" | "team" | "personal";
 type OKRStatus = "on_track" | "at_risk" | "behind" | "closed";
 type ReviewStatus = "draft" | "submitted" | "approved";
 type Tone = "emerald" | "amber" | "red" | "blue" | "purple" | "slate";
+type ActiveOkrTab =
+  | "dashboard"
+  | "objectives"
+  | "teams"
+  | "meetings"
+  | "okrReports"
+  | "kpis"
+  | "reviews";
 
 type Objective = {
   id: number;
@@ -108,6 +116,37 @@ type MemberRow = {
   progress: number;
   reviewScore: number;
   riskCount: number;
+};
+
+type AiOkrKeyResultSuggestion = {
+  title: string;
+  startValue: number;
+  targetValue: number;
+  unit: string;
+  weight: number;
+  confidence: number;
+};
+
+type AiOkrSuggestion = {
+  title: string;
+  description: string;
+  confidence: number;
+  rationale: string;
+  keyResults: AiOkrKeyResultSuggestion[];
+  risks: string[];
+  checkpoints: string[];
+};
+
+type MeetingPlan = {
+  id: string;
+  title: string;
+  team: string;
+  time: string;
+  status: string;
+  tone: Tone;
+  agenda: string[];
+  decisions: string[];
+  owners: string[];
 };
 
 const numberFormatter = new Intl.NumberFormat("fa-IR");
@@ -229,9 +268,7 @@ export default function OKRPerformancePage({
   projects,
   currentUser,
 }: OKRPerformancePageProps) {
-  const [activeTab, setActiveTab] = useState<
-    "dashboard" | "objectives" | "kpis" | "reviews"
-  >("dashboard");
+  const [activeTab, setActiveTab] = useState<ActiveOkrTab>("dashboard");
 
   const [objectives, setObjectives] = useState<Objective[]>([]);
   const [keyResults, setKeyResults] = useState<KeyResult[]>([]);
@@ -284,6 +321,29 @@ export default function OKRPerformancePage({
   const [reviewStrengths, setReviewStrengths] = useState("");
   const [reviewImprovements, setReviewImprovements] = useState("");
   const [reviewNote, setReviewNote] = useState("");
+
+  const [isAiOkrModalOpen, setIsAiOkrModalOpen] = useState(false);
+  const [aiOkrStep, setAiOkrStep] = useState<1 | 2>(1);
+  const [aiOkrTitle, setAiOkrTitle] = useState("");
+  const [aiOkrContext, setAiOkrContext] = useState("");
+  const [aiOkrProjectId, setAiOkrProjectId] = useState<number | null>(null);
+  const [aiOkrOwnerId, setAiOkrOwnerId] = useState<number | null>(currentUser?.id || null);
+  const [aiOkrLevel, setAiOkrLevel] = useState<OKRLevel>("team");
+  const [aiOkrPeriod, setAiOkrPeriod] = useState("Q1 2026");
+  const [aiOkrSuggestion, setAiOkrSuggestion] = useState<AiOkrSuggestion | null>(null);
+  const [aiOkrSelectedKr, setAiOkrSelectedKr] = useState<number[]>([]);
+  const [aiOkrLoading, setAiOkrLoading] = useState(false);
+  const [aiOkrError, setAiOkrError] = useState("");
+  const [aiOkrSource, setAiOkrSource] = useState<"openai" | "fallback" | "">("");
+
+  const [selectedObjectiveDetailId, setSelectedObjectiveDetailId] = useState<number | null>(
+    null
+  );
+  const [selectedKeyResultDetailId, setSelectedKeyResultDetailId] = useState<number | null>(
+    null
+  );
+  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
+  const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
 
   useEffect(() => {
     const q = query(collection(db, "objectives"), orderBy("createdAt", "desc"));
@@ -702,6 +762,218 @@ export default function OKRPerformancePage({
     return items.slice(0, 4);
   }, [dashboard.atRisk, dashboard.behind, dashboard.progress, dashboard.totalReviews]);
 
+  const selectedObjectiveDetail = useMemo(() => {
+    return (
+      objectives.find((item) => item.id === selectedObjectiveDetailId) ||
+      filteredObjectives[0] ||
+      null
+    );
+  }, [filteredObjectives, objectives, selectedObjectiveDetailId]);
+
+  const selectedObjectiveDetailKrs = useMemo(() => {
+    return selectedObjectiveDetail ? getObjectiveKeyResults(selectedObjectiveDetail.id) : [];
+  }, [getObjectiveKeyResults, selectedObjectiveDetail]);
+
+  const selectedKeyResultDetail = useMemo(() => {
+    return (
+      keyResults.find((item) => item.id === selectedKeyResultDetailId) ||
+      selectedObjectiveDetailKrs[0] ||
+      null
+    );
+  }, [keyResults, selectedKeyResultDetailId, selectedObjectiveDetailKrs]);
+
+  const selectedTeam = useMemo(() => {
+    return dashboard.teamRows.find((item) => item.id === selectedTeamId) || dashboard.teamRows[0] || null;
+  }, [dashboard.teamRows, selectedTeamId]);
+
+  const meetingPlans = useMemo<MeetingPlan[]>(() => {
+    const riskyTeam = dashboard.teamRows.find((team) => team.riskCount > 0);
+    const bestTeam = dashboard.teamRows.find((team) => team.progress >= dashboard.progress);
+    const topOwner = dashboard.memberRows[0]?.name || currentUser?.name || "مدیر تیم";
+
+    return [
+      {
+        id: "risk-review",
+        title: riskyTeam ? `بررسی ریسک‌های ${riskyTeam.name}` : "مرور هفتگی سلامت OKR",
+        team: riskyTeam?.name || "همه تیم‌ها",
+        time: "امروز · ۱۰:۰۰",
+        status: dashboard.behind > 0 ? "فوری" : "در برنامه",
+        tone: dashboard.behind > 0 ? "red" : "emerald",
+        agenda: [
+          "مرور هدف‌های عقب‌مانده و نیازمند توجه",
+          "مشخص کردن مانع، مالک و تصمیم بعدی",
+          "به‌روزرسانی KRهایی که عدد فعلی ندارند",
+        ],
+        decisions: [
+          dashboard.behind > 0
+            ? `${formatNumber(dashboard.behind)} هدف برای رفع مانع اولویت دارد.`
+            : "فعلا هدف بحرانی ثبت نشده است.",
+          "خروجی جلسه باید در توضیح OKR یا KR ثبت شود.",
+        ],
+        owners: [topOwner],
+      },
+      {
+        id: "alignment",
+        title: "هم‌راستاسازی هدف‌های شرکت و تیم‌ها",
+        team: bestTeam?.name || "تیم محصول",
+        time: "فردا · ۱۴:۰۰",
+        status: "برنامه‌ریزی‌شده",
+        tone: "blue",
+        agenda: [
+          "بررسی ارتباط OKRهای تیمی با هدف‌های شرکتی",
+          "حذف هدف‌های کم‌اثر یا تکراری",
+          "تبدیل خروجی‌ها به KR عددی",
+        ],
+        decisions: [
+          "هر هدف تیمی باید حداقل یک KR قابل سنجش داشته باشد.",
+          "اهداف بدون مالک در پایان جلسه تعیین تکلیف می‌شوند.",
+        ],
+        owners: [currentUser?.name || "مدیر"],
+      },
+      {
+        id: "performance",
+        title: "مرور عملکرد اعضای کلیدی",
+        team: "منابع انسانی و مدیریت",
+        time: "پنجشنبه · ۱۱:۰۰",
+        status: "نیازمند ورودی",
+        tone: "purple",
+        agenda: [
+          "مرور امتیازهای عملکرد ثبت‌شده",
+          "بررسی اعضای بدون ارزیابی",
+          "تعیین اقدام رشد یا پشتیبانی برای هر نفر",
+        ],
+        decisions: [
+          `${formatNumber(dashboard.totalReviews)} ارزیابی عملکرد در سیستم ثبت شده است.`,
+          "اعضای بدون ارزیابی باید قبل از پایان دوره تکمیل شوند.",
+        ],
+        owners: [topOwner],
+      },
+    ];
+  }, [
+    currentUser?.name,
+    dashboard.behind,
+    dashboard.memberRows,
+    dashboard.progress,
+    dashboard.teamRows,
+    dashboard.totalReviews,
+  ]);
+
+  const selectedMeeting = useMemo(() => {
+    return meetingPlans.find((item) => item.id === selectedMeetingId) || meetingPlans[0];
+  }, [meetingPlans, selectedMeetingId]);
+
+  const openAiOkrModal = () => {
+    setAiOkrStep(1);
+    setAiOkrTitle("");
+    setAiOkrContext("");
+    setAiOkrProjectId(projects[0]?.id || null);
+    setAiOkrOwnerId(currentUser?.id || null);
+    setAiOkrLevel("team");
+    setAiOkrPeriod(periods[0] || "Q1 2026");
+    setAiOkrSuggestion(null);
+    setAiOkrSelectedKr([]);
+    setAiOkrError("");
+    setAiOkrSource("");
+    setIsAiOkrModalOpen(true);
+  };
+
+  const requestAiOkrSuggestion = async () => {
+    setAiOkrLoading(true);
+    setAiOkrError("");
+
+    try {
+      const selectedProject = getProject(aiOkrProjectId);
+      const selectedOwner = getUser(aiOkrOwnerId);
+      const response = await fetch("api/okr-ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: aiOkrTitle,
+          context: aiOkrContext,
+          period: aiOkrPeriod,
+          level: aiOkrLevel,
+          project: selectedProject,
+          owner: selectedOwner,
+          existingObjectives: objectives.slice(0, 8).map((objective) => ({
+            title: objective.title,
+            description: objective.description,
+            level: objective.level,
+            status: objective.status,
+            period: objective.period,
+            progress: getObjectiveProgress(objective),
+          })),
+        }),
+      });
+      const data = (await response.json()) as {
+        ok?: boolean;
+        error?: string;
+        source?: "openai" | "fallback";
+        suggestion?: AiOkrSuggestion;
+      };
+
+      if (!response.ok || !data.ok || !data.suggestion) {
+        throw new Error(data.error || "پیشنهاد OKR ساخته نشد.");
+      }
+
+      setAiOkrSuggestion(data.suggestion);
+      setAiOkrSource(data.source || "fallback");
+      setAiOkrSelectedKr(data.suggestion.keyResults.map((_, index) => index));
+      setAiOkrStep(2);
+    } catch (error) {
+      setAiOkrError(error instanceof Error ? error.message : "خطای نامشخص رخ داد.");
+    } finally {
+      setAiOkrLoading(false);
+    }
+  };
+
+  const createOkrFromAiSuggestion = async () => {
+    if (!aiOkrSuggestion) return;
+
+    const objectiveId = Date.now();
+    const objective: Objective = {
+      id: objectiveId,
+      title: aiOkrSuggestion.title.trim(),
+      description: aiOkrSuggestion.description.trim(),
+      level: aiOkrLevel,
+      status: "on_track",
+      ownerId: aiOkrOwnerId,
+      projectId: aiOkrProjectId,
+      period: aiOkrPeriod.trim() || "Q1 2026",
+      progress: 0,
+      createdAt: Date.now(),
+    };
+
+    const selectedKeyResults = aiOkrSuggestion.keyResults.filter((_, index) =>
+      aiOkrSelectedKr.includes(index)
+    );
+
+    await Promise.all([
+      setDoc(doc(db, "objectives", String(objectiveId)), objective),
+      ...selectedKeyResults.map((keyResult, index) => {
+        const id = objectiveId + index + 1;
+        const item: KeyResult = {
+          id,
+          objectiveId,
+          title: keyResult.title.trim(),
+          startValue: Number(keyResult.startValue || 0),
+          currentValue: Number(keyResult.startValue || 0),
+          targetValue: Number(keyResult.targetValue || 100),
+          unit: keyResult.unit.trim() || "%",
+          weight: Number(keyResult.weight || 1),
+          progress: 0,
+          createdAt: Date.now() + index + 1,
+        };
+
+        return setDoc(doc(db, "keyResults", String(id)), item);
+      }),
+    ]);
+
+    setSelectedObjectiveDetailId(objectiveId);
+    setSelectedKeyResultDetailId(null);
+    setActiveTab("objectives");
+    setIsAiOkrModalOpen(false);
+  };
+
   const openNewObjectiveModal = () => {
     setEditingObjectiveId(null);
     setObjectiveTitle("");
@@ -916,6 +1188,12 @@ export default function OKRPerformancePage({
 
           <div className="flex flex-wrap gap-2">
             <button
+              onClick={openAiOkrModal}
+              className="rounded-2xl bg-purple-600 px-5 py-3 text-sm font-black text-white shadow-lg shadow-purple-100 transition hover:-translate-y-0.5 hover:bg-purple-700"
+            >
+              + ساخت OKR با AI
+            </button>
+            <button
               onClick={openNewObjectiveModal}
               className="rounded-2xl bg-blue-600 px-5 py-3 text-sm font-black text-white shadow-lg shadow-blue-100 transition hover:-translate-y-0.5 hover:bg-blue-700"
             >
@@ -948,6 +1226,9 @@ export default function OKRPerformancePage({
             {[
               ["dashboard", "نمای مدیریت"],
               ["objectives", "OKR و KR"],
+              ["teams", "تیم‌ها"],
+              ["meetings", "جلسات"],
+              ["okrReports", "گزارش‌ها"],
               ["kpis", "KPI"],
               ["reviews", "ارزیابی‌ها"],
             ].map(([key, label]) => (
@@ -1300,11 +1581,11 @@ export default function OKRPerformancePage({
                 tone: "blue" as Tone,
               },
               {
-                title: "ساخت OKR جدید",
-                body: "یک هدف تازه بسازید و برای آن KR قابل سنجش تعریف کنید.",
-                action: "ساخت OKR",
+                title: "ساخت OKR با پیشنهاد AI",
+                body: "هدف را وارد کنید تا AI هدف دقیق‌تر و KRهای عددی قابل ثبت پیشنهاد بدهد.",
+                action: "شروع ساخت هوشمند",
                 tone: "purple" as Tone,
-                onClick: openNewObjectiveModal,
+                onClick: openAiOkrModal,
               },
               {
                 title: "نقشه هم‌راستایی",
@@ -1345,12 +1626,20 @@ export default function OKRPerformancePage({
               <h3 className="text-xl font-black text-slate-900">اهداف و نتیجه‌های کلیدی</h3>
               <p className="mt-1 text-sm text-slate-500">مدیریت Objectiveها و KRهای قابل اندازه‌گیری</p>
             </div>
-            <button
-              onClick={openNewObjectiveModal}
-              className="rounded-2xl bg-blue-600 px-5 py-3 text-sm font-black text-white"
-            >
-              + هدف جدید
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={openAiOkrModal}
+                className="rounded-2xl bg-purple-600 px-5 py-3 text-sm font-black text-white"
+              >
+                + OKR با AI
+              </button>
+              <button
+                onClick={openNewObjectiveModal}
+                className="rounded-2xl bg-blue-600 px-5 py-3 text-sm font-black text-white"
+              >
+                + هدف جدید
+              </button>
+            </div>
           </div>
 
           <div className="mb-5 grid gap-3 lg:grid-cols-4">
@@ -1391,6 +1680,121 @@ export default function OKRPerformancePage({
             </select>
           </div>
 
+          {selectedObjectiveDetail && (
+            <div className="mb-5 grid gap-5 xl:grid-cols-[1fr_0.9fr]">
+              <div className="rounded-3xl border border-blue-100 bg-blue-50/60 p-5">
+                <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="mb-2 flex flex-wrap gap-2">
+                      <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-blue-700">
+                        جزئیات OKR
+                      </span>
+                      <span className={`rounded-full border px-3 py-1 text-xs font-black ${statusStyle[selectedObjectiveDetail.status]}`}>
+                        {statusLabel[selectedObjectiveDetail.status]}
+                      </span>
+                    </div>
+                    <h3 className="text-xl font-black text-slate-900">
+                      {selectedObjectiveDetail.title}
+                    </h3>
+                    <p className="mt-2 text-sm leading-7 text-slate-600">
+                      {selectedObjectiveDetail.description || "برای این هدف توضیحی ثبت نشده است."}
+                    </p>
+                  </div>
+                  <span className="rounded-2xl bg-white px-4 py-3 text-sm font-black text-blue-700">
+                    {formatPercent(getObjectiveProgress(selectedObjectiveDetail))}
+                  </span>
+                </div>
+
+                <ProgressBar value={getObjectiveProgress(selectedObjectiveDetail)} tone="blue" />
+
+                <div className="mt-5 grid gap-3 md:grid-cols-3">
+                  <div className="rounded-2xl bg-white p-4">
+                    <p className="text-xs font-black text-slate-400">مسئول</p>
+                    <p className="mt-2 font-black text-slate-800">
+                      {getUser(selectedObjectiveDetail.ownerId)?.name || "نامشخص"}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl bg-white p-4">
+                    <p className="text-xs font-black text-slate-400">پروژه</p>
+                    <p className="mt-2 font-black text-slate-800">
+                      {getProject(selectedObjectiveDetail.projectId)?.name || "بدون پروژه"}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl bg-white p-4">
+                    <p className="text-xs font-black text-slate-400">KR فعال</p>
+                    <p className="mt-2 font-black text-slate-800">
+                      {formatNumber(selectedObjectiveDetailKrs.length)}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-5 flex flex-wrap gap-2">
+                  <button
+                    onClick={() => openNewKeyResultModal(selectedObjectiveDetail.id)}
+                    className="rounded-2xl bg-blue-600 px-4 py-3 text-xs font-black text-white"
+                  >
+                    + افزودن KR
+                  </button>
+                  <button
+                    onClick={() => openEditObjectiveModal(selectedObjectiveDetail)}
+                    className="rounded-2xl bg-white px-4 py-3 text-xs font-black text-slate-700"
+                  >
+                    ویرایش هدف
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-3xl border border-slate-200 bg-white p-5">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-lg font-black text-slate-900">جزئیات نتیجه کلیدی</h3>
+                    <p className="mt-1 text-sm text-slate-500">برای دیدن جزئیات، روی KRهای پایین کلیک کن.</p>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-500">
+                    KR Detail
+                  </span>
+                </div>
+
+                {selectedKeyResultDetail ? (
+                  <div className="space-y-4">
+                    <div className="rounded-2xl bg-slate-50 p-4">
+                      <p className="font-black text-slate-900">{selectedKeyResultDetail.title}</p>
+                      <p className="mt-2 text-sm leading-7 text-slate-500">
+                        از {formatNumber(selectedKeyResultDetail.startValue)} تا{" "}
+                        {formatNumber(selectedKeyResultDetail.targetValue)}{" "}
+                        {selectedKeyResultDetail.unit} · وزن{" "}
+                        {formatNumber(selectedKeyResultDetail.weight)}
+                      </p>
+                    </div>
+                    <div>
+                      <div className="mb-2 flex items-center justify-between text-sm">
+                        <span className="font-black text-slate-700">پیشرفت فعلی</span>
+                        <span className="font-black text-blue-700">
+                          {formatPercent(selectedKeyResultDetail.progress)}
+                        </span>
+                      </div>
+                      <ProgressBar value={selectedKeyResultDetail.progress} tone="blue" />
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-3">
+                      {[42, 38, 31].map((value, index) => (
+                        <div key={index} className="rounded-2xl border border-slate-100 p-3">
+                          <p className="text-xs font-black text-slate-400">
+                            هفته {formatNumber(index + 1)}
+                          </p>
+                          <p className="mt-2 text-lg font-black text-slate-800">
+                            {formatPercent(Math.max(0, selectedKeyResultDetail.progress - value))}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyState text="برای این هدف هنوز KR ثبت نشده است." />
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="space-y-4">
             {filteredObjectives.map((objective) => {
               const owner = getUser(objective.ownerId);
@@ -1429,6 +1833,15 @@ export default function OKRPerformancePage({
                     </div>
 
                     <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => {
+                          setSelectedObjectiveDetailId(objective.id);
+                          setSelectedKeyResultDetailId(null);
+                        }}
+                        className="rounded-2xl bg-white px-4 py-2 text-xs font-black text-blue-700 ring-1 ring-blue-100 hover:bg-blue-50"
+                      >
+                        جزئیات
+                      </button>
                       <button
                         onClick={() => openNewKeyResultModal(objective.id)}
                         className="rounded-2xl bg-blue-50 px-4 py-2 text-xs font-black text-blue-700 hover:bg-blue-100"
@@ -1473,6 +1886,12 @@ export default function OKRPerformancePage({
                             </p>
                           </div>
                           <button
+                            onClick={() => setSelectedKeyResultDetailId(keyResult.id)}
+                            className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-black text-blue-600 hover:bg-blue-100"
+                          >
+                            جزئیات
+                          </button>
+                          <button
                             onClick={() => deleteKeyResult(keyResult.id)}
                             className="rounded-xl bg-white px-3 py-2 text-xs font-black text-red-500 hover:bg-red-50"
                           >
@@ -1511,6 +1930,303 @@ export default function OKRPerformancePage({
             {filteredObjectives.length === 0 && (
               <EmptyState text="هدفی با فیلترهای انتخاب‌شده پیدا نشد." />
             )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === "teams" && (
+        <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+          <div className="rounded-3xl border border-white/70 bg-white/90 p-5 shadow-xl shadow-slate-200/60 backdrop-blur">
+            <div className="mb-5 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-black text-slate-900">تیم‌ها</h3>
+                <p className="mt-1 text-sm text-slate-500">لیست تیم‌ها با پیشرفت، ریسک و تعداد KR</p>
+              </div>
+              <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-700">
+                Team List
+              </span>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-1">
+              {dashboard.teamRows.map((team) => (
+                <button
+                  key={team.id}
+                  onClick={() => setSelectedTeamId(team.id)}
+                  className={`rounded-3xl border p-4 text-right transition ${
+                    selectedTeam?.id === team.id
+                      ? "border-blue-300 bg-blue-50"
+                      : "border-slate-200 bg-white hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate font-black text-slate-900">{team.name}</p>
+                      <p className="mt-1 text-xs font-bold text-slate-400">
+                        {formatNumber(team.objectiveCount)} OKR · {formatNumber(team.keyResultCount)} KR · {formatNumber(team.kpiCount)} KPI
+                      </p>
+                    </div>
+                    <span className={`rounded-full border px-3 py-1 text-xs font-black ${statusStyle[team.status]}`}>
+                      {statusLabel[team.status]}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-[1fr_48px] items-center gap-3">
+                    <ProgressBar value={team.progress} tone={team.riskCount > 0 ? "amber" : "emerald"} />
+                    <span className="text-xs font-black text-slate-600">
+                      {formatPercent(team.progress)}
+                    </span>
+                  </div>
+                </button>
+              ))}
+
+              {dashboard.teamRows.length === 0 && <EmptyState text="هنوز تیمی با OKR یا KPI ثبت نشده است." />}
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-white/70 bg-white/90 p-5 shadow-xl shadow-slate-200/60 backdrop-blur">
+            <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-black text-slate-900">
+                  جزئیات {selectedTeam?.name || "تیم"}
+                </h3>
+                <p className="mt-1 text-sm text-slate-500">نمای جزئیات تیم برای مدیریت عملکرد</p>
+              </div>
+              {selectedTeam && (
+                <span className={`rounded-full border px-3 py-1 text-xs font-black ${statusStyle[selectedTeam.status]}`}>
+                  {statusLabel[selectedTeam.status]}
+                </span>
+              )}
+            </div>
+
+            {selectedTeam ? (
+              <div className="space-y-5">
+                <div className="grid gap-4 md:grid-cols-4">
+                  {[
+                    ["پیشرفت", formatPercent(selectedTeam.progress), "blue" as Tone],
+                    ["OKR", formatNumber(selectedTeam.objectiveCount), "purple" as Tone],
+                    ["KR", formatNumber(selectedTeam.keyResultCount), "emerald" as Tone],
+                    ["ریسک", formatNumber(selectedTeam.riskCount), selectedTeam.riskCount > 0 ? ("red" as Tone) : ("slate" as Tone)],
+                  ].map(([label, value, tone]) => (
+                    <div key={String(label)} className={`rounded-2xl border p-4 ${toneSurface[tone as Tone]}`}>
+                      <p className="text-xs font-black text-slate-500">{label}</p>
+                      <p className={`mt-2 text-2xl font-black ${toneText[tone as Tone]}`}>
+                        {value}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="rounded-3xl border border-slate-200 p-5">
+                  <h4 className="mb-4 font-black text-slate-900">OKRهای مرتبط</h4>
+                  <div className="space-y-3">
+                    {objectives
+                      .filter((objective) => {
+                        const project = getProject(objective.projectId);
+                        return selectedTeam.id === "without-project"
+                          ? !objective.projectId
+                          : selectedTeam.name === project?.name;
+                      })
+                      .slice(0, 6)
+                      .map((objective) => (
+                        <button
+                          key={objective.id}
+                          onClick={() => {
+                            setSelectedObjectiveDetailId(objective.id);
+                            setActiveTab("objectives");
+                          }}
+                          className="w-full rounded-2xl border border-slate-100 bg-slate-50 p-4 text-right"
+                        >
+                          <div className="mb-2 flex items-center justify-between gap-3">
+                            <p className="font-black text-slate-800">{objective.title}</p>
+                            <span className="text-xs font-black text-blue-700">
+                              {formatPercent(getObjectiveProgress(objective))}
+                            </span>
+                          </div>
+                          <ProgressBar value={getObjectiveProgress(objective)} tone="blue" />
+                        </button>
+                      ))}
+                  </div>
+                </div>
+
+                <div className="rounded-3xl border border-slate-200 p-5">
+                  <h4 className="mb-4 font-black text-slate-900">اعضای درگیر</h4>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {dashboard.memberRows.slice(0, 4).map((member) => (
+                      <div key={member.id} className="rounded-2xl bg-slate-50 p-4">
+                        <div className="mb-2 flex items-center justify-between">
+                          <p className="font-black text-slate-800">{member.name}</p>
+                          <span className="text-xs font-black text-slate-500">
+                            {formatPercent(member.progress)}
+                          </span>
+                        </div>
+                        <ProgressBar value={member.progress} tone={member.riskCount > 0 ? "amber" : "emerald"} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <EmptyState text="برای دیدن جزئیات، یک تیم را انتخاب کن." />
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === "meetings" && (
+        <div className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
+          <div className="rounded-3xl border border-white/70 bg-white/90 p-5 shadow-xl shadow-slate-200/60 backdrop-blur">
+            <div className="mb-5 flex items-center justify-between">
+              <div>
+                <h3 className="text-xl font-black text-slate-900">جلسات</h3>
+                <p className="mt-1 text-sm text-slate-500">جلسات پیشنهادی برای پیگیری OKRها</p>
+              </div>
+              <span className="rounded-full bg-purple-50 px-3 py-1 text-xs font-black text-purple-700">
+                Meeting List
+              </span>
+            </div>
+
+            <div className="space-y-3">
+              {meetingPlans.map((meeting) => (
+                <button
+                  key={meeting.id}
+                  onClick={() => setSelectedMeetingId(meeting.id)}
+                  className={`w-full rounded-3xl border p-4 text-right transition ${
+                    selectedMeeting.id === meeting.id
+                      ? "border-purple-300 bg-purple-50"
+                      : "border-slate-200 bg-white hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <p className="font-black text-slate-900">{meeting.title}</p>
+                    <span className={`rounded-full px-3 py-1 text-xs font-black ${toneSurface[meeting.tone]} ${toneText[meeting.tone]}`}>
+                      {meeting.status}
+                    </span>
+                  </div>
+                  <p className="text-xs font-bold text-slate-400">
+                    {meeting.team} · {meeting.time}
+                  </p>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-white/70 bg-white/90 p-5 shadow-xl shadow-slate-200/60 backdrop-blur">
+            <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-black text-slate-900">{selectedMeeting.title}</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  {selectedMeeting.team} · {selectedMeeting.time}
+                </p>
+              </div>
+              <span className={`rounded-full px-3 py-1 text-xs font-black ${toneSurface[selectedMeeting.tone]} ${toneText[selectedMeeting.tone]}`}>
+                {selectedMeeting.status}
+              </span>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="rounded-3xl border border-slate-200 p-5">
+                <h4 className="mb-4 font-black text-slate-900">دستور جلسه</h4>
+                <div className="space-y-3">
+                  {selectedMeeting.agenda.map((item) => (
+                    <p key={item} className="rounded-2xl bg-slate-50 p-3 text-sm font-bold leading-7 text-slate-600">
+                      {item}
+                    </p>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-3xl border border-slate-200 p-5">
+                <h4 className="mb-4 font-black text-slate-900">تصمیم‌های پیشنهادی</h4>
+                <div className="space-y-3">
+                  {selectedMeeting.decisions.map((item) => (
+                    <p key={item} className="rounded-2xl bg-blue-50 p-3 text-sm font-bold leading-7 text-blue-700">
+                      {item}
+                    </p>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-3xl border border-slate-200 p-5">
+                <h4 className="mb-4 font-black text-slate-900">مالک‌ها</h4>
+                <div className="space-y-3">
+                  {selectedMeeting.owners.map((item) => (
+                    <p key={item} className="rounded-2xl bg-emerald-50 p-3 text-sm font-black text-emerald-700">
+                      {item}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "okrReports" && (
+        <div className="rounded-3xl border border-white/70 bg-white/90 p-5 shadow-xl shadow-slate-200/60 backdrop-blur">
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xl font-black text-slate-900">گزارش‌های OKR و عملکرد</h3>
+              <p className="mt-1 text-sm text-slate-500">خلاصه مدیریتی برای مرور هفتگی یا جلسه عملکرد</p>
+            </div>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">
+              Report Hub
+            </span>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-3">
+            <div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-5">
+              <p className="text-sm font-black text-emerald-700">گزارش OKR</p>
+              <p className="mt-3 text-3xl font-black text-emerald-800">
+                {formatPercent(dashboard.progress)}
+              </p>
+              <p className="mt-2 text-sm leading-7 text-slate-600">
+                {formatNumber(dashboard.onTrack)} هدف در مسیر، {formatNumber(dashboard.atRisk)} نیازمند توجه و {formatNumber(dashboard.behind)} عقب‌مانده.
+              </p>
+            </div>
+            <div className="rounded-3xl border border-blue-100 bg-blue-50 p-5">
+              <p className="text-sm font-black text-blue-700">گزارش KPI</p>
+              <p className="mt-3 text-3xl font-black text-blue-800">
+                {formatPercent(dashboard.kpiProgress)}
+              </p>
+              <p className="mt-2 text-sm leading-7 text-slate-600">
+                {formatNumber(dashboard.totalKpis)} شاخص فعال برای سنجش عملکرد تیم و پروژه‌ها.
+              </p>
+            </div>
+            <div className="rounded-3xl border border-purple-100 bg-purple-50 p-5">
+              <p className="text-sm font-black text-purple-700">گزارش عملکرد افراد</p>
+              <p className="mt-3 text-3xl font-black text-purple-800">
+                {dashboard.averageReviewScore > 0 ? formatNumber(dashboard.averageReviewScore) : "—"}
+              </p>
+              <p className="mt-2 text-sm leading-7 text-slate-600">
+                {formatNumber(dashboard.totalReviews)} ارزیابی ثبت شده؛ اعضای بدون ارزیابی باید تکمیل شوند.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-5 xl:grid-cols-2">
+            <div className="rounded-3xl border border-slate-200 p-5">
+              <h4 className="mb-4 font-black text-slate-900">ریسک‌های قابل گزارش</h4>
+              <div className="space-y-3">
+                {insights.map((item) => (
+                  <div key={item.title} className={`rounded-2xl border p-4 ${toneSurface[item.tone]}`}>
+                    <p className={`font-black ${toneText[item.tone]}`}>{item.title}</p>
+                    <p className="mt-2 text-sm leading-7 text-slate-600">{item.body}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-3xl border border-slate-200 p-5">
+              <h4 className="mb-4 font-black text-slate-900">خروجی آماده جلسه مدیریت</h4>
+              <div className="space-y-3 text-sm font-bold leading-7 text-slate-600">
+                <p className="rounded-2xl bg-slate-50 p-4">
+                  پیشرفت کلی OKR برابر {formatPercent(dashboard.progress)} است و {formatNumber(dashboard.totalKeyResults)} نتیجه کلیدی در سیستم ثبت شده.
+                </p>
+                <p className="rounded-2xl bg-slate-50 p-4">
+                  تیم‌های نیازمند پیگیری:{" "}
+                  {dashboard.teamRows.filter((team) => team.riskCount > 0).map((team) => team.name).join("، ") || "موردی ثبت نشده است"}.
+                </p>
+                <p className="rounded-2xl bg-slate-50 p-4">
+                  جلسه پیشنهادی بعدی: {meetingPlans[0].title} در {meetingPlans[0].time}.
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1661,6 +2377,277 @@ export default function OKRPerformancePage({
             })}
 
             {reviews.length === 0 && <EmptyState text="هنوز ارزیابی عملکرد ثبت نشده است." />}
+          </div>
+        </div>
+      )}
+
+      {isAiOkrModalOpen && (
+        <div
+          onMouseDown={() => setIsAiOkrModalOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm"
+        >
+          <div
+            onMouseDown={(event) => event.stopPropagation()}
+            className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-3xl bg-white p-6 text-right shadow-2xl"
+          >
+            <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <span className="rounded-full bg-purple-50 px-3 py-1 text-xs font-black text-purple-700">
+                  راهنمای هوشمند OKR
+                </span>
+                <h3 className="mt-3 text-2xl font-black text-slate-900">
+                  ساخت OKR با پیشنهاد AI
+                </h3>
+                <p className="mt-2 text-sm leading-7 text-slate-500">
+                  هدف خام یا مسئله مدیریتی را بنویس؛ AI یک هدف دقیق‌تر و KRهای قابل سنجش پیشنهاد می‌دهد.
+                </p>
+              </div>
+              <button
+                onClick={() => setIsAiOkrModalOpen(false)}
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-xl font-black text-slate-500"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="mb-6 grid gap-3 md:grid-cols-2">
+              {[
+                ["۱", "هدف", aiOkrStep >= 1],
+                ["۲", "نتایج کلیدی", aiOkrStep >= 2],
+              ].map(([number, label, active]) => (
+                <div
+                  key={String(label)}
+                  className={`rounded-2xl border p-4 ${
+                    active
+                      ? "border-purple-200 bg-purple-50 text-purple-700"
+                      : "border-slate-200 bg-slate-50 text-slate-400"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-sm font-black">
+                      {number}
+                    </span>
+                    <span className="font-black">{label}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {aiOkrStep === 1 && (
+              <div className="grid gap-5 xl:grid-cols-[1fr_0.75fr]">
+                <div className="space-y-4">
+                  <input
+                    value={aiOkrTitle}
+                    onChange={(event) => setAiOkrTitle(event.target.value)}
+                    placeholder="هدف یا مسئله؛ مثلا افزایش رشد کاربران فعال ماهانه"
+                    className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none focus:border-purple-500"
+                  />
+                  <textarea
+                    value={aiOkrContext}
+                    onChange={(event) => setAiOkrContext(event.target.value)}
+                    placeholder="زمینه، مشکل، شاخص فعلی، محدودیت‌ها یا چیزی که مدیریت باید بداند..."
+                    className="min-h-32 w-full resize-none rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold leading-7 outline-none focus:border-purple-500"
+                  />
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <select
+                      value={aiOkrLevel}
+                      onChange={(event) => setAiOkrLevel(event.target.value as OKRLevel)}
+                      className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none"
+                    >
+                      <option value="company">شرکتی</option>
+                      <option value="team">تیمی</option>
+                      <option value="personal">فردی</option>
+                    </select>
+                    <input
+                      value={aiOkrPeriod}
+                      onChange={(event) => setAiOkrPeriod(event.target.value)}
+                      placeholder="دوره؛ مثلا Q2 2026"
+                      className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none"
+                    />
+                    <select
+                      value={aiOkrProjectId || ""}
+                      onChange={(event) =>
+                        setAiOkrProjectId(event.target.value ? Number(event.target.value) : null)
+                      }
+                      className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none"
+                    >
+                      <option value="">بدون پروژه</option>
+                      {projects.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {project.name}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={aiOkrOwnerId || ""}
+                      onChange={(event) =>
+                        setAiOkrOwnerId(event.target.value ? Number(event.target.value) : null)
+                      }
+                      className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold outline-none"
+                    >
+                      <option value="">انتخاب مسئول</option>
+                      {users.map((user) => (
+                        <option key={user.id} value={user.id}>
+                          {user.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {aiOkrError && (
+                    <div className="rounded-2xl border border-red-100 bg-red-50 p-4 text-sm font-bold leading-7 text-red-700">
+                      {aiOkrError}
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <button
+                      onClick={() => setIsAiOkrModalOpen(false)}
+                      className="rounded-2xl border border-slate-200 px-5 py-3 text-sm font-black text-slate-600"
+                    >
+                      انصراف
+                    </button>
+                    <button
+                      onClick={requestAiOkrSuggestion}
+                      disabled={aiOkrLoading}
+                      className="rounded-2xl bg-purple-600 px-6 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {aiOkrLoading ? "در حال ساخت پیشنهاد..." : "دریافت پیشنهاد AI"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                  <h4 className="text-lg font-black text-slate-900">راهنمای نوشتن هدف خوب</h4>
+                  <div className="mt-4 space-y-3 text-sm font-bold leading-7 text-slate-600">
+                    <p className="rounded-2xl bg-white p-3">هدف باید واضح و نتیجه‌محور باشد.</p>
+                    <p className="rounded-2xl bg-white p-3">KRها باید عدد شروع، عدد هدف و واحد داشته باشند.</p>
+                    <p className="rounded-2xl bg-white p-3">اگر زمینه دقیق‌تر بنویسی، پیشنهاد AI قابل استفاده‌تر می‌شود.</p>
+                  </div>
+                  <div className="mt-5 rounded-2xl border border-amber-100 bg-amber-50 p-4 text-sm font-bold leading-7 text-amber-700">
+                    این دکمه فقط وقتی کلیک شود درخواست AI می‌زند. اگر کلید OpenAI تنظیم نشده باشد، پیشنهاد داخلی سیستم نمایش داده می‌شود.
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {aiOkrStep === 2 && aiOkrSuggestion && (
+              <div className="grid gap-5 xl:grid-cols-[1fr_0.75fr]">
+                <div className="space-y-4">
+                  <div className="rounded-3xl border border-purple-100 bg-purple-50 p-5">
+                    <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-purple-700">
+                          {aiOkrSource === "openai" ? "پیشنهاد OpenAI" : "پیشنهاد داخلی"}
+                        </span>
+                        <h4 className="mt-3 text-xl font-black text-slate-900">
+                          {aiOkrSuggestion.title}
+                        </h4>
+                      </div>
+                      <span className="rounded-2xl bg-white px-4 py-3 text-sm font-black text-purple-700">
+                        اطمینان {formatPercent(aiOkrSuggestion.confidence)}
+                      </span>
+                    </div>
+                    <p className="text-sm font-bold leading-7 text-slate-600">
+                      {aiOkrSuggestion.description}
+                    </p>
+                    <p className="mt-4 rounded-2xl bg-white p-4 text-sm font-bold leading-7 text-slate-600">
+                      {aiOkrSuggestion.rationale}
+                    </p>
+                  </div>
+
+                  <div className="rounded-3xl border border-slate-200 p-5">
+                    <div className="mb-4 flex items-center justify-between">
+                      <h4 className="text-lg font-black text-slate-900">نتایج کلیدی پیشنهادی</h4>
+                      <span className="text-xs font-black text-slate-400">
+                        {formatNumber(aiOkrSelectedKr.length)} مورد انتخاب شده
+                      </span>
+                    </div>
+                    <div className="space-y-3">
+                      {aiOkrSuggestion.keyResults.map((keyResult, index) => {
+                        const checked = aiOkrSelectedKr.includes(index);
+
+                        return (
+                          <label
+                            key={`${keyResult.title}-${index}`}
+                            className={`block cursor-pointer rounded-2xl border p-4 ${
+                              checked
+                                ? "border-purple-200 bg-purple-50"
+                                : "border-slate-200 bg-white"
+                            }`}
+                          >
+                            <div className="flex items-start gap-3">
+                              <input
+                                checked={checked}
+                                onChange={() =>
+                                  setAiOkrSelectedKr((current) =>
+                                    current.includes(index)
+                                      ? current.filter((item) => item !== index)
+                                      : [...current, index]
+                                  )
+                                }
+                                type="checkbox"
+                                className="mt-1 h-4 w-4 accent-purple-600"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p className="font-black text-slate-900">{keyResult.title}</p>
+                                <p className="mt-2 text-xs font-bold text-slate-500">
+                                  شروع {formatNumber(keyResult.startValue)} · هدف{" "}
+                                  {formatNumber(keyResult.targetValue)} {keyResult.unit} · وزن{" "}
+                                  {formatNumber(keyResult.weight)} · اطمینان{" "}
+                                  {formatPercent(keyResult.confidence)}
+                                </p>
+                              </div>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <button
+                      onClick={() => setAiOkrStep(1)}
+                      className="rounded-2xl border border-slate-200 px-5 py-3 text-sm font-black text-slate-600"
+                    >
+                      بازگشت
+                    </button>
+                    <button
+                      onClick={createOkrFromAiSuggestion}
+                      disabled={aiOkrSelectedKr.length === 0}
+                      className="rounded-2xl bg-purple-600 px-6 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      ثبت OKR و KRها
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-5">
+                    <h4 className="font-black text-emerald-800">چک‌پوینت‌های خوب</h4>
+                    <div className="mt-4 space-y-3">
+                      {aiOkrSuggestion.checkpoints.map((item) => (
+                        <p key={item} className="rounded-2xl bg-white p-3 text-sm font-bold leading-7 text-slate-600">
+                          {item}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="rounded-3xl border border-red-100 bg-red-50 p-5">
+                    <h4 className="font-black text-red-800">ریسک‌های احتمالی</h4>
+                    <div className="mt-4 space-y-3">
+                      {aiOkrSuggestion.risks.map((item) => (
+                        <p key={item} className="rounded-2xl bg-white p-3 text-sm font-bold leading-7 text-slate-600">
+                          {item}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

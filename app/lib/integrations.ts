@@ -197,6 +197,241 @@ export async function generateAiTaskSolution(input: TaskAiInput) {
   };
 }
 
+export type AiOkrKeyResultSuggestion = {
+  title: string;
+  startValue: number;
+  targetValue: number;
+  unit: string;
+  weight: number;
+  confidence: number;
+};
+
+export type AiOkrSuggestion = {
+  title: string;
+  description: string;
+  confidence: number;
+  rationale: string;
+  keyResults: AiOkrKeyResultSuggestion[];
+  risks: string[];
+  checkpoints: string[];
+};
+
+type AiOkrSuggestionInput = {
+  title?: string;
+  context?: string;
+  period?: string;
+  level?: string;
+  project?: Record<string, unknown> | null;
+  owner?: Record<string, unknown> | null;
+  existingObjectives?: Array<Record<string, unknown>>;
+};
+
+const cleanAiJson = (text: string) =>
+  text
+    .trim()
+    .replace(/^```(?:json)?/i, "")
+    .replace(/```$/i, "")
+    .trim();
+
+const toNumber = (value: unknown, fallback: number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const clampPercent = (value: number) => Math.max(0, Math.min(100, value));
+
+const normalizeOkrSuggestion = (
+  value: unknown,
+  fallback: AiOkrSuggestion
+): AiOkrSuggestion => {
+  if (!isRecord(value)) return fallback;
+
+  const keyResults = Array.isArray(value.keyResults)
+    ? value.keyResults
+        .filter(isRecord)
+        .map((item, index) => ({
+          title:
+            typeof item.title === "string" && item.title.trim()
+              ? item.title.trim()
+              : fallback.keyResults[index]?.title || `نتیجه کلیدی ${index + 1}`,
+          startValue: toNumber(item.startValue, 0),
+          targetValue: toNumber(item.targetValue, fallback.keyResults[index]?.targetValue || 100),
+          unit:
+            typeof item.unit === "string" && item.unit.trim()
+              ? item.unit.trim()
+              : fallback.keyResults[index]?.unit || "%",
+          weight: Math.max(1, toNumber(item.weight, 1)),
+          confidence: clampPercent(toNumber(item.confidence, 75)),
+        }))
+    : fallback.keyResults;
+
+  return {
+    title:
+      typeof value.title === "string" && value.title.trim()
+        ? value.title.trim()
+        : fallback.title,
+    description:
+      typeof value.description === "string" && value.description.trim()
+        ? value.description.trim()
+        : fallback.description,
+    confidence: clampPercent(toNumber(value.confidence, fallback.confidence)),
+    rationale:
+      typeof value.rationale === "string" && value.rationale.trim()
+        ? value.rationale.trim()
+        : fallback.rationale,
+    keyResults: keyResults.slice(0, 5),
+    risks: Array.isArray(value.risks)
+      ? value.risks.filter((item): item is string => typeof item === "string").slice(0, 5)
+      : fallback.risks,
+    checkpoints: Array.isArray(value.checkpoints)
+      ? value.checkpoints
+          .filter((item): item is string => typeof item === "string")
+          .slice(0, 5)
+      : fallback.checkpoints,
+  };
+};
+
+const fallbackOkrSuggestion = (input: AiOkrSuggestionInput): AiOkrSuggestion => {
+  const rawTitle = typeof input.title === "string" ? input.title.trim() : "";
+  const title = rawTitle || "افزایش کیفیت و سرعت تحویل تیم";
+  const context = typeof input.context === "string" ? input.context.trim() : "";
+  const projectName =
+    input.project && typeof input.project.name === "string"
+      ? String(input.project.name)
+      : "پروژه";
+
+  return {
+    title,
+    description: context
+      ? `تمرکز این OKR روی ${context} است و باید با خروجی قابل اندازه‌گیری، مالک مشخص و مرور هفتگی دنبال شود.`
+      : `تمرکز این OKR روی بهبود نتیجه‌های مهم ${projectName} است و باید با KRهای قابل سنجش دنبال شود.`,
+    confidence: 84,
+    rationale:
+      "هدف پیشنهادی مشخص، قابل پیگیری و مناسب مرور مدیریتی است؛ نتیجه‌های کلیدی هم عددی و قابل ثبت هستند.",
+    keyResults: [
+      {
+        title: `رسیدن پیشرفت عملیاتی «${title}» به ۸۵٪`,
+        startValue: 0,
+        targetValue: 85,
+        unit: "%",
+        weight: 2,
+        confidence: 88,
+      },
+      {
+        title: "کاهش موارد نیازمند پیگیری مدیریتی به کمتر از ۲ مورد",
+        startValue: 6,
+        targetValue: 2,
+        unit: "مورد",
+        weight: 1,
+        confidence: 80,
+      },
+      {
+        title: "ثبت شواهد قابل بررسی برای همه خروجی‌های کلیدی",
+        startValue: 0,
+        targetValue: 100,
+        unit: "%",
+        weight: 1,
+        confidence: 82,
+      },
+      {
+        title: "برگزاری مرور هفتگی و ثبت تصمیم بعدی برای هر ریسک",
+        startValue: 0,
+        targetValue: 4,
+        unit: "جلسه",
+        weight: 1,
+        confidence: 78,
+      },
+    ],
+    risks: [
+      "اگر مالک هر KR مشخص نباشد، پیگیری مدیریتی سخت می‌شود.",
+      "اگر داده پایه ثبت نشود، سنجش پیشرفت قابل اعتماد نخواهد بود.",
+    ],
+    checkpoints: [
+      "مالک هدف و KRها مشخص شود.",
+      "عدد شروع و عدد هدف قبل از شروع دوره تأیید شود.",
+      "هر هفته وضعیت، مانع و اقدام بعدی ثبت شود.",
+    ],
+  };
+};
+
+export async function generateAiOkrSuggestion(input: AiOkrSuggestionInput) {
+  const fallback = fallbackOkrSuggestion(input);
+  const apiKey = process.env.OPENAI_API_KEY;
+
+  if (!apiKey) {
+    return {
+      source: "fallback" as const,
+      suggestion: fallback,
+    };
+  }
+
+  const model = process.env.OPENAI_MODEL || "gpt-5.2";
+  const prompt = [
+    "You are an OKR coach for a product and engineering manager.",
+    "Write Persian only.",
+    "Return JSON only, no markdown.",
+    "The JSON shape must be:",
+    JSON.stringify({
+      title: "هدف کوتاه و شفاف",
+      description: "توضیح مدیریتی",
+      confidence: 85,
+      rationale: "چرا این هدف مناسب است",
+      keyResults: [
+        {
+          title: "نتیجه کلیدی عددی",
+          startValue: 0,
+          targetValue: 100,
+          unit: "%",
+          weight: 1,
+          confidence: 80,
+        },
+      ],
+      risks: ["ریسک قابل بررسی"],
+      checkpoints: ["چک‌پوینت مدیریتی"],
+    }),
+    "Rules:",
+    "- Suggest one objective and 3 to 5 measurable key results.",
+    "- Do not invent company facts. Use only the input.",
+    "- Keep each KR measurable with numeric startValue and targetValue.",
+    "- confidence values must be 0 to 100.",
+    JSON.stringify(input),
+  ].join("\n\n");
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      input: prompt,
+      max_output_tokens: 1200,
+      store: false,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`OpenAI request failed with ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  const text = getOutputText(data);
+
+  try {
+    return {
+      source: "openai" as const,
+      suggestion: normalizeOkrSuggestion(JSON.parse(cleanAiJson(text)), fallback),
+    };
+  } catch {
+    return {
+      source: "openai" as const,
+      suggestion: fallback,
+    };
+  }
+}
+
 export async function sendReportEmail({
   to,
   subject,
